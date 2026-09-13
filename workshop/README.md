@@ -21,7 +21,7 @@ Backend (needs the Robosuite venv: `uv sync --extra robosuite` at repo root):
 ```bash
 cp workshop/backend/.envrc.example workshop/backend/.envrc  # edit if your Perception API host differs
 source workshop/backend/.envrc
-uv run python -m workshop.backend.main  # http://localhost:8300
+uv run python -m workshop.backend.main  # http://localhost:8200 (matches the Cloudflare Tunnel origin)
 ```
 
 WebUI (dev server, proxies /api to the backend):
@@ -52,6 +52,11 @@ Perception API servers (SAM3/GraspNet/PyRoKi) are never part of this tunnel —
 only the backend's port is exposed. See `WORKSHOP_ENDPOINT.md` for the
 current Perception API host and `workshop/backend/.envrc.example` for how the
 backend resolves it.
+
+If you're using a Token-based tunnel (the `docker-compose.tunnel.yml` flow
+above), the Public Hostname's origin service URL is set in the Cloudflare
+Zero Trust dashboard, not in this repo — make sure it points at
+`http://localhost:8200` to match the backend's default port.
 
 ## Adding/changing tasks
 

@@ -51,3 +51,4 @@ check.md
 
 # Workshop WebUI (workshop/)
 _replays/
+*.tsbuildinfo

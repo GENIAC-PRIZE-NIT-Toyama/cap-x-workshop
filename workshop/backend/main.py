@@ -26,9 +26,14 @@ class ServerArgs:
     host: str = "0.0.0.0"
     """Host to bind the server to."""
 
-    port: int = 8300
-    """Port to run the server on (kept distinct from capx/web/server.py's default 8200
-    so both can run side by side on the same machine during development)."""
+    port: int = 8200
+    """Port to run the server on.
+
+    Matches the Cloudflare Tunnel's already-configured public hostname origin
+    (see WORKSHOP_WEBUI_SPEC.md section 4.1) — change this only if you also
+    update that origin in the Cloudflare dashboard. Note this is the same
+    default port as the unrelated capx/web/server.py; don't run both on the
+    same machine at the same time."""
 
     reload: bool = False
     """Enable auto-reload for development."""

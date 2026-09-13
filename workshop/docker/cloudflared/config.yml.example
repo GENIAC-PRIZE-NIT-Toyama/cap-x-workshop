@@ -15,5 +15,5 @@ ingress:
   # Single ingress rule: Backend serves the built WebUI from the same origin
   # (see WORKSHOP_WEBUI_SPEC.md section 2/3.2), so only one hostname is needed.
   - hostname: workshop.example.com
-    service: http://localhost:8300
+    service: http://localhost:8200
   - service: http_status:404
