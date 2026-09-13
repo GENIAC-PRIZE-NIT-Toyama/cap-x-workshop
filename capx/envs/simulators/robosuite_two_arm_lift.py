@@ -95,7 +95,7 @@ class RobosuiteTwoArmLiftEnv(BaseEnv):
                 "TwoArmLift",
                 robots=["Panda", "Panda"],
                 env_configuration="opposed",
-                has_renderer=True,
+                has_renderer=False,
                 has_offscreen_renderer=True,
                 camera_names=self.render_camera_names,
                 renderer="mujoco",
