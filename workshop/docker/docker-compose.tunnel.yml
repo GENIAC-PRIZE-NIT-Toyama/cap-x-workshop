@@ -1,0 +1,25 @@
+# Cloudflare Tunnel for the workshop WebUI (see WORKSHOP_WEBUI_SPEC.md section 4.1).
+#
+# Only cloudflared runs in Docker. The Backend and WebUI are NOT
+# containerized — they run natively on this machine (see
+# workshop/backend/main.py, workshop/webui). `network_mode: host` lets this
+# container reach them at `http://localhost:<port>` without any port
+# mapping, since they are not part of any docker network.
+#
+# Usage:
+#   cd workshop/docker
+#   cp .env.example .env   # fill in CLOUDFLARE_TUNNEL_TOKEN
+#   docker compose -f docker-compose.tunnel.yml up -d
+#
+# This is a separate compose file from the main capx/docker/docker-compose.yml
+# (Perception API servers) — the two are unrelated and can be brought up/down
+# independently.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: capx-workshop-cloudflared
+    network_mode: host
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
