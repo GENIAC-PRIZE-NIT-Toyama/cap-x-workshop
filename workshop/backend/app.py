@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
             "task_id": task.task_id,
             "frames": result["frames"],
             "task_prompt": result.get("task_prompt"),
+            "api_docs": result.get("api_docs", ""),
         }
 
     @app.get("/api/sessions/{session_id}/observation")

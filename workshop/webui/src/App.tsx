@@ -5,6 +5,7 @@ import CameraView from "./components/CameraView";
 import Cell, { type CellState } from "./components/Cell";
 import PerceptionPanel from "./components/PerceptionPanel";
 import Toolbar from "./components/Toolbar";
+import ApiDocsModal from "./components/ApiDocsModal";
 import type { PerceptionStep } from "./types";
 
 let cellCounter = 0;
@@ -17,6 +18,7 @@ interface SessionInfo {
   sessionId: string;
   taskId: string;
   taskPrompt: string | null;
+  apiDocs: string;
 }
 
 export default function App() {
@@ -30,6 +32,7 @@ export default function App() {
   const [perceptionSteps, setPerceptionSteps] = useState<PerceptionStep[]>([]);
   const [resetting, setResetting] = useState(false);
   const [savingReplay, setSavingReplay] = useState(false);
+  const [docsVisible, setDocsVisible] = useState(false);
   const replayUrlRef = useRef<string | null>(null);
 
   const handleSelectTask = useCallback(async (taskId: string) => {
@@ -37,7 +40,12 @@ export default function App() {
     setStartError(null);
     try {
       const res = await createSession(taskId);
-      setSession({ sessionId: res.session_id, taskId: res.task_id, taskPrompt: res.task_prompt });
+      setSession({
+        sessionId: res.session_id,
+        taskId: res.task_id,
+        taskPrompt: res.task_prompt,
+        apiDocs: res.api_docs,
+      });
       setFrames(res.frames);
       setCells([newCell()]);
       setPerceptionSteps([]);
@@ -94,6 +102,7 @@ export default function App() {
       setFrames(res.frames);
       setCells([newCell()]);
       setPerceptionSteps([]);
+      setSession((prev) => (prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt } : prev));
     } finally {
       setResetting(false);
     }
@@ -150,9 +159,11 @@ export default function App() {
         onReset={handleReset}
         onSaveReplay={handleSaveReplay}
         onEndSession={handleEndSession}
+        onShowDocs={() => setDocsVisible(true)}
         resetting={resetting}
         savingReplay={savingReplay}
       />
+      <ApiDocsModal visible={docsVisible} docs={session.apiDocs} onClose={() => setDocsVisible(false)} />
       {session.taskPrompt && <p className="task-prompt">{session.taskPrompt}</p>}
       <div className="main-panes">
         <div className="pane pane-camera">

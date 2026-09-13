@@ -1,4 +1,4 @@
-import type { CellResult, CreateSessionResponse, TaskSummary } from "./types";
+import type { CellResult, CreateSessionResponse, ResetResponse, TaskSummary } from "./types";
 
 // All calls use relative paths on purpose: in dev, Vite proxies /api to the
 // backend (vite.config.ts); in production the backend serves this app from
@@ -36,9 +36,7 @@ export function runCell(sessionId: string, cellId: string, code: string): Promis
   });
 }
 
-export function resetSession(
-  sessionId: string,
-): Promise<{ frames: Record<string, string>; task_prompt: string | null }> {
+export function resetSession(sessionId: string): Promise<ResetResponse> {
   return request(`/api/sessions/${sessionId}/reset`, { method: "POST" });
 }
 

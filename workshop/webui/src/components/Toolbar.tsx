@@ -3,6 +3,7 @@ interface Props {
   onReset: () => void;
   onSaveReplay: () => void;
   onEndSession: () => void;
+  onShowDocs: () => void;
   resetting: boolean;
   savingReplay: boolean;
 }
@@ -12,6 +13,7 @@ export default function Toolbar({
   onReset,
   onSaveReplay,
   onEndSession,
+  onShowDocs,
   resetting,
   savingReplay,
 }: Props) {
@@ -19,6 +21,7 @@ export default function Toolbar({
     <div className="toolbar">
       <span className="toolbar-task">Task: {taskId}</span>
       <div className="toolbar-actions">
+        <button onClick={onShowDocs}>利用可能なAPI</button>
         <button onClick={onReset} disabled={resetting}>
           {resetting ? "リセット中..." : "環境リセット"}
         </button>

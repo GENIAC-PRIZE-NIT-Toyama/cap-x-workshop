@@ -103,6 +103,13 @@ def worker_main(config_path: str, video_dir: str, cmd_q: "queue.Queue[dict]", re
         for api in getattr(env, "_apis", {}).values():
             api.enable_webui(True)
 
+        # Function reference for whatever API tier this task's config wires up
+        # (name + signature + docstring, via ApiBase.combined_doc()). Sent to
+        # the frontend's docs panel so participants can see exactly which
+        # functions actually exist, instead of guessing from the task prompt
+        # or from oracle code written against a different API tier.
+        api_docs = "\n\n".join(api.combined_doc() for api in getattr(env, "_apis", {}).values())
+
         env.enable_video_capture(True, clear=True)
 
         cell_counter = 0
@@ -139,6 +146,7 @@ def worker_main(config_path: str, video_dir: str, cmd_q: "queue.Queue[dict]", re
                         "request_id": request_id,
                         "frames": _extract_frames(env, obs),
                         "task_prompt": info.get("task_prompt"),
+                        "api_docs": api_docs,
                     }
                 )
 
