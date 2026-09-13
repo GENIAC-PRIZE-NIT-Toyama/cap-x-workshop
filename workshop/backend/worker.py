@@ -163,7 +163,14 @@ def worker_main(config_path: str, video_dir: str, cmd_q: "queue.Queue[dict]", re
                         "reward": float(reward),
                         "terminated": bool(terminated),
                         "truncated": bool(truncated),
-                        "task_completed": info.get("task_completed"),
+                        # Low-level task_completed() implementations (e.g.
+                        # robosuite's _check_success()) commonly return
+                        # numpy.bool_, not a native bool. Pydantic/FastAPI
+                        # can't serialize that, so normalize it here rather
+                        # than at the HTTP boundary.
+                        "task_completed": (
+                            None if info.get("task_completed") is None else bool(info["task_completed"])
+                        ),
                         "perception_steps": perception_steps,
                     }
                 )
