@@ -156,6 +156,7 @@ export default function App() {
     <div className="app session-screen">
       <Toolbar
         taskId={session.taskId}
+        onBackToMain={handleEndSession}
         onReset={handleReset}
         onSaveReplay={handleSaveReplay}
         onEndSession={handleEndSession}

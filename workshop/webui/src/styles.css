@@ -90,6 +90,18 @@ body {
   gap: 8px;
 }
 
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.back-btn {
+  background: transparent;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
 .toolbar-actions button {
   margin-left: 8px;
 }

@@ -41,7 +41,9 @@
 1. 要件の「Perception APIの生出力に触れて泥臭さを体感する」という目的に最も合致する。
 2. §1.4で述べる通り、`segment_sam3_text_prompt`/`segment_sam3_point_prompt`は呼び出し時に**segmentation overlay画像を既にログしている**ため、要件で追加された「SAM3のセグメンテーション結果をオプションで見られるようにしたい」がそのまま実現できる（visual tierは内部でSAM3を呼ぶがユーザーコードからは呼び出しが見えないため、この可視化との相性が悪い）。
 
-タスクによって物体数・工程数は異なるが、使用可能なAPI関数の一覧（reduced tierの関数セット）は常に同じにする。
+タスクによって物体数・工程数は異なるが、使用可能なAPI関数の一覧は常に同じにする。
+
+> **更新（実装後の決定）**: 実際のデモではreduced tierではなく**visual tierを全タスク共通の標準として採用**することにした（`workshop/backend/config.py`の`TASKS`は`franka_robosuite_*.yaml`＝visual tier用の無印YAMLを指す）。理由: デモでは高レベル関数（`get_object_pose`, `sample_grasp_pose`）で「動かしてみる」体験を優先する。なお上記の懸念②は実装後の調査で誤りと判明した — `capx/integrations/franka/control.py`の`get_object_pose`/`sample_grasp_pose`も内部のSAM3呼び出し・GraspNet呼び出しのたびに`_log_step`/`_log_step_update`でexecution_loggerに記録しており（`control.py:154-406`）、visual tierでも§1.4のPerceptionビューは無改造でそのまま機能する。reduced tierへ切り替えたい場合は`config.py`の`config_path`を`*_reduced_api.yaml`に戻すだけでよい。
 
 ### 1.3 実行モデル：コードブロック＝1 `step()`呼び出し
 
