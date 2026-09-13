@@ -1,10 +1,10 @@
 """FastAPI backend for the CaP-X workshop WebUI.
 
-Endpoints follow WORKSHOP_WEBUI_SPEC.md section 3.2. This is a fresh,
-standalone implementation for the workshop repo (see WORKSHOP_WEBUI_SPEC.md
-section 2/3.2: existing `capx/web/server.py` is not reused as a base, only
-its "single origin + window.location-based WS/URL resolution" idea, which
-also happens to work unchanged behind a Cloudflare Tunnel).
+Endpoints follow WORKSHOP_WEBUI_SPEC.md section 3.2. This process itself
+never executes participant code — it only starts and talks (over HTTP) to
+per-session sandbox containers managed by `session_manager.py`. See that
+module's docstring, `workshop/backend/docker/Dockerfile`, and
+`workshop/docker/docker-compose.yml` for the actual isolation.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -59,7 +60,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.state.manager = SessionManager(video_root=VIDEO_ROOT)
+    app.state.manager = SessionManager(video_root=VIDEO_ROOT, repo_root=REPO_ROOT)
 
     @app.on_event("startup")
     async def _start_reaper() -> None:
@@ -100,15 +101,13 @@ def create_app() -> FastAPI:
             logger.exception("Failed to start session for task %s", task.task_id)
             raise HTTPException(status_code=500, detail=str(exc))
 
+        # The sandbox container comes up idle (no simulation reset yet); do
+        # the first reset here so the frontend gets an initial camera frame.
         try:
-            result = await manager.send(session.session_id, {"type": "reset"})
+            result = await manager.reset(session.session_id)
         except Exception as exc:
             await manager.close_session(session.session_id)
-            raise HTTPException(status_code=500, detail=str(exc))
-
-        if result.get("type") != "reset_ok":
-            await manager.close_session(session.session_id)
-            raise HTTPException(status_code=500, detail=f"Environment reset failed: {result}")
+            raise HTTPException(status_code=500, detail=f"Environment reset failed: {exc}")
 
         return {
             "session_id": session.session_id,
@@ -121,32 +120,31 @@ def create_app() -> FastAPI:
     @app.get("/api/sessions/{session_id}/observation")
     async def get_observation(session_id: str) -> dict:
         manager = _require_session(app, session_id)
-        return await manager.send(session_id, {"type": "observation"})
+        return await manager.observation(session_id)
 
     @app.post("/api/sessions/{session_id}/cells/run")
     async def run_cell(session_id: str, request: RunCellRequest) -> dict:
         manager = _require_session(app, session_id)
         try:
-            result = await manager.send(
-                session_id,
-                {"type": "run_cell", "code": request.code, "cell_id": request.cell_id},
-                timeout=180,
-            )
-        except TimeoutError as exc:
-            raise HTTPException(status_code=504, detail=str(exc))
-        if result.get("type") == "error":
-            raise HTTPException(status_code=400, detail=result)
-        return result
+            return await manager.run_cell(session_id, request.cell_id, request.code, timeout=180)
+        except requests.Timeout:
+            raise HTTPException(status_code=504, detail="Cell execution timed out")
+        except requests.HTTPError as exc:
+            # The sandbox container's /run_cell returned non-2xx: a
+            # framework-level bug, not a participant code error (those come
+            # back as a normal {"ok": False, ...} 200 response instead).
+            detail = exc.response.text if exc.response is not None else str(exc)
+            raise HTTPException(status_code=500, detail=detail)
 
     @app.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str) -> dict:
         manager = _require_session(app, session_id)
-        return await manager.send(session_id, {"type": "reset"})
+        return await manager.reset(session_id)
 
     @app.post("/api/sessions/{session_id}/replay")
     async def save_replay(session_id: str) -> FileResponse:
         manager = _require_session(app, session_id)
-        result = await manager.send(session_id, {"type": "replay"}, timeout=60)
+        result = await manager.replay(session_id)
         path = result.get("path")
         if not path or not Path(path).exists():
             raise HTTPException(status_code=404, detail="No recorded frames yet")

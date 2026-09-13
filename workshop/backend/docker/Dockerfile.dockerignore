@@ -1,0 +1,37 @@
+# Build context for workshop/backend/docker/Dockerfile.
+# Only capx/ (minus the third_party vendor dirs the `robosuite` extra doesn't
+# need), env_configs/, workshop/backend/, and the uv project manifests are
+# needed to run the sandboxed Session Worker.
+
+.git
+.github
+.z
+.venv
+outputs
+web-ui
+workshop/webui
+workshop/docker
+node_modules
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# Third-party vendor trees not needed by the `robosuite` extra.
+# capx/third_party/robosuite IS needed (the `robosuite` extra itself).
+# capx/third_party/sam3 IS needed too: `sam3` is an *unconditional*
+# dependency in [project.dependencies] (pyproject.toml:45), not gated by any
+# extra, so `uv sync` requires it regardless of which extras are selected.
+capx/third_party/b1k
+capx/third_party/contact_graspnet_pytorch
+capx/third_party/LIBERO-PRO
+capx/third_party/libero_dependencies
+capx/third_party/curobo
+capx/third_party/verl
+
+WORKSHOP_REFACTOR_PLAN.md
+WORKSHOP_WEBUI_SPEC.md

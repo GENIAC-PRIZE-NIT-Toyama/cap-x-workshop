@@ -233,3 +233,39 @@ ingress:
 - **cloudflaredのTunnel接続方式**: Tunnel Token方式（ダッシュボードで発行、`TUNNEL_TOKEN`環境変数のみで起動）か、`config.yml`＋認証情報ファイルをコンテナにマウントするlegacy方式か
 - **セル実行中の中間フレーム配信**: `move_to_joints_blocking()`等はstep()を多数回内部で繰り返す。セル実行完了後の最終フレームのみ返す（実装コスト低）か、WebSocketで中間フレームも逐次ストリーミングする（体験は良いがレイテンシ/実装コスト増）かはPhase 3以降の判断
 - **リプレイ動画の保存先**: ブラウザへの直接ダウンロードのみで良いか、Backend側にも保管して後日参加者に配布できるようにするか
+
+## 8. サンドボックス設計（追記・実装確定）
+
+§1.3で述べた通り、コードブロック実行は`CodeExecutionEnvBase.step(code)`内部の`exec(code, globals, globals)`である。当初案（§3.3）ではこれをBackendが直接spawnする1プロセス内で動かしていたが、**このWebUIを外部公開する以上、参加者コードは事実上「誰でも送り込める任意のPythonコード」であり、ファイルシステム・ネットワーク・ホストへのフルアクセスを許すのは重大なリスク**と判断し、実行環境をDockerコンテナで隔離する方式に変更した。
+
+### 8.1 脅威モデル
+
+- 参加者コードは`exec()`でBackendと同じ特権で動く。`import os, socket, subprocess`等を防ぐ手段が元々なかった。
+- 外部公開後は、悪意のあるコード（ホストのファイル読み書き、LAN内の他システムへの攻撃、機密情報の持ち出し、リソース枯渇によるDoS）がインターネットから誰でも送り込める状態だった。
+- 参加者セッション同士が同じプロセス/ネットワークを共有していた場合、あるセッションが別セッションを妨害できてしまう。
+
+### 8.2 採用した設計（実機検証済み）
+
+- **1セッション=1 Dockerコンテナ**（`workshop/backend/docker/Dockerfile`でビルド、`workshop/backend/worker_server.py`がentrypoint）。`--cap-drop ALL --security-opt no-new-privileges`、`--memory/--cpus/--pids-limit`でリソース上限。**`--read-only`は最終的に採用しなかった**（後述8.2.1）。`/workspace`（capxソース）は`:ro`でマウントし、`/tmp`のみtmpfsで書き込み可。
+- **Backend↔Worker間通信はHTTP**（multiprocessing.Queueから変更）。`workshop/backend/env_runtime.py`が実行ロジック本体（`CodeExecutionEnvBase`のラッパー）で、`worker_server.py`がそれをFastAPIで薄くラップしてコンテナ内で待ち受ける。HTTPの1接続=1リクエスト/レスポンスなので、旧設計にあった`request_id`相関の仕組みは不要になった。
+- **ネットワーク隔離はDocker Composeの`internal: true`＋通常bridgeの組み合わせで実現し、root/iptablesの設定スクリプトは使わない**。`workshop/docker/docker-compose.yml`に、cloudflaredと並べて「SAM3/GraspNet/PyRoKiそれぞれへの固定宛先TCP中継」を行うだけの`perception-proxy-*`コンテナ（`socat`）を定義する。各Workerコンテナは2つのネットワークを持つ（**アタッチする順序が重要、8.2.2参照**）:
+  1. セッション専用の`internal: true`ネットワーク（`docker run`時点のプライマリ）。事前にproxy 3種を`docker network connect`済みなので、起動直後からPerception APIに到達できる。
+  2. 共有の`capx-workshop-io`ネットワーク（`docker run`後に`network connect`）。`enable_ip_masquerade=false`の通常bridgeで、Backendが`127.0.0.1`にバインドした公開ポート経由でWorkerに到達するためだけに存在する。
+  - 実機で確認：インターネット（8.8.8.8）にもPerception APIホスト（192.168.0.200）への直接到達にも失敗（タイムアウト）。proxyコンテナ名経由でのみ到達可能。
+- **GPU**: `--gpus`（CDIモード）はこのホストでは`libnvidia-gl`未導入によるVulkan ICDマウント失敗で動かなかったため、旧来の`--runtime nvidia -e NVIDIA_VISIBLE_DEVICES=... -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`方式を採用（実機で動作確認済み、EGLレンダリングも含む）。
+
+#### 8.2.1 `--read-only`を採用しなかった理由
+
+実機テストで、visual tierの`get_object_pose`（`capx/integrations/franka/control.py`）が`depth_image.jpg`をカレントディレクトリに書き出そうとして`OSError: Read-only file system`で失敗することが判明した。これはcapx本体の既存デバッグ出力処理であり、ワークショップ用に変更すべきではないと判断。コンテナ自身のrootfs（イメージのレイヤー）は書き込み可能に戻したが、これは`docker rm`で消える使い捨てレイヤーへの書き込みに過ぎず、ホスト・`/workspace`・他セッションには一切影響しない。実害の小さいトレードオフとして許容した。
+
+#### 8.2.2 ネットワークのアタッチ順序が重要だった理由
+
+当初は「セッション専用networkを`docker run`後にconnect」の順序で実装したが、実機テストで**セッションAのコンテナがセッションBのコンテナに直接到達できてしまう**ことが判明した。原因は、`docker run`時点でプライマリだった`capx-workshop-io`（デフォルトゲートウェイを持つ通常bridge）経由で、ホストが未知の宛先をそのゲートウェイ越しにフォワードし、そこから別のセッション専用bridgeへもルーティングしてしまうこと（Dockerの通常のネットワーク間分離がこの経路をカバーしていなかった）。
+
+対策として、**セッション専用の`internal`ネットワークを`docker run`時点のプライマリにし、`capx-workshop-io`を後からconnectする**順に変更した。`internal`ネットワークはゲートウェイを持たないため、コンテナにデフォルトルートが存在せず、未知の宛先へのフォワーディングが原理的に起きなくなる。これによりインターネット/LANへの漏洩は完全に塞がったことを確認したが、**セッション間の相互到達（参加者Aのコンテナから参加者Bのコンテナへの到達）までは追い込んでいない**（優先度はインターネット/LAN/ホストからの隔離であり、セッション間分離は判断の結果、深追いしないことにした）。
+
+### 8.3 この変更で不要になったもの
+
+- `workshop/backend/worker.py`（multiprocessing版）は`env_runtime.py`＋`worker_server.py`に置き換えて削除。
+- root権限が必要なiptablesセットアップスクリプトは一度書いたが（`setup_sandbox_network.py`）、Docker Composeの`internal: true`＋masquerade無効化bridgeの組み合わせで同等の隔離ができると分かったため削除した。セットアップは`docker compose up -d`のみで完結する。
+- Backend自体はcapxに依存しなくなった（`uv sync`だけでよく、`--extra robosuite`はWorkerイメージのビルド時のみ必要）。
