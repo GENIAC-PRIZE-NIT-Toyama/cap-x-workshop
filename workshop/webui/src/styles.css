@@ -61,6 +61,70 @@ body {
   color: #444;
 }
 
+.notebook-name-field {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 320px;
+}
+
+.notebook-name-field label {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.notebook-name-field input {
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.notebook-list {
+  margin-top: 32px;
+}
+
+.notebook-list h2 {
+  font-size: 1.05rem;
+  margin-bottom: 12px;
+}
+
+.notebook-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: white;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.notebook-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notebook-row-name {
+  font-weight: 600;
+}
+
+.notebook-row-meta {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.notebook-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .status {
   margin-top: 16px;
   color: #555;
@@ -100,6 +164,12 @@ body {
   background: transparent;
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.toolbar-task-id {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.85rem;
+  font-weight: normal;
 }
 
 .toolbar-actions button {

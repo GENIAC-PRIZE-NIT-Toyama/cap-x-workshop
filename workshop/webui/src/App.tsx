@@ -6,6 +6,7 @@ import Cell, { type CellState } from "./components/Cell";
 import PerceptionPanel from "./components/PerceptionPanel";
 import Toolbar from "./components/Toolbar";
 import ApiDocsModal from "./components/ApiDocsModal";
+import { newNotebookId, saveNotebook, type Notebook } from "./notebooks";
 import type { PerceptionStep } from "./types";
 
 let cellCounter = 0;
@@ -32,6 +33,8 @@ export default function App() {
   const [resetting, setResetting] = useState(false);
   const [savingReplay, setSavingReplay] = useState(false);
   const [docsVisible, setDocsVisible] = useState(false);
+  const [notebookId, setNotebookId] = useState<string | null>(null);
+  const [notebookName, setNotebookName] = useState("");
   const replayUrlRef = useRef<string | null>(null);
 
   // Live camera feed: pushes every newly-recorded frame — including
@@ -46,7 +49,7 @@ export default function App() {
     return () => ws.close();
   }, [session?.sessionId]);
 
-  const handleSelectTask = useCallback(async (taskId: string) => {
+  const handleStartNew = useCallback(async (taskId: string, name: string) => {
     setStarting(true);
     setStartError(null);
     try {
@@ -60,12 +63,55 @@ export default function App() {
       setFrames(res.frames);
       setCells([newCell()]);
       setPerceptionSteps([]);
+      const id = newNotebookId();
+      setNotebookId(id);
+      setNotebookName(name);
+      saveNotebook({ id, name, taskId, cells: [""], updatedAt: new Date().toISOString() });
     } catch (err) {
       setStartError(String(err));
     } finally {
       setStarting(false);
     }
   }, []);
+
+  const handleOpenNotebook = useCallback(async (notebook: Notebook) => {
+    setStarting(true);
+    setStartError(null);
+    try {
+      const res = await createSession(notebook.taskId);
+      setSession({
+        sessionId: res.session_id,
+        taskId: res.task_id,
+        taskPrompt: res.task_prompt,
+        apiDocs: res.api_docs,
+      });
+      setFrames(res.frames);
+      setCells(notebook.cells.length > 0 ? notebook.cells.map((code) => newCell(code)) : [newCell()]);
+      setPerceptionSteps([]);
+      setNotebookId(notebook.id);
+      setNotebookName(notebook.name);
+    } catch (err) {
+      setStartError(String(err));
+    } finally {
+      setStarting(false);
+    }
+  }, []);
+
+  // Auto-save the notebook's code (not results) to the browser as it's
+  // edited, debounced so typing doesn't hit localStorage on every keystroke.
+  useEffect(() => {
+    if (!notebookId || !session) return;
+    const timeout = setTimeout(() => {
+      saveNotebook({
+        id: notebookId,
+        name: notebookName,
+        taskId: session.taskId,
+        cells: cells.map((c) => c.code),
+        updatedAt: new Date().toISOString(),
+      });
+    }, 500);
+    return () => clearTimeout(timeout);
+  }, [cells, notebookId, notebookName, session]);
 
   const updateCell = useCallback((id: string, patch: Partial<CellState>) => {
     setCells((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -111,7 +157,9 @@ export default function App() {
     try {
       const res = await resetSession(session.sessionId);
       setFrames(res.frames);
-      setCells([newCell()]);
+      // Keep the written code — only the environment and each cell's stale
+      // (pre-reset) run result get cleared, not the notebook itself.
+      setCells((prev) => prev.map((c) => ({ ...c, result: null, error: null })));
       setPerceptionSteps([]);
       setSession((prev) => (prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt } : prev));
     } finally {
@@ -151,12 +199,14 @@ export default function App() {
     setFrames({});
     setCells([newCell()]);
     setPerceptionSteps([]);
+    setNotebookId(null);
+    setNotebookName("");
   }, [session]);
 
   if (!session) {
     return (
       <div className="app">
-        <TaskSelect onSelect={handleSelectTask} busy={starting} />
+        <TaskSelect onStartNew={handleStartNew} onOpenNotebook={handleOpenNotebook} busy={starting} />
         {starting && <p className="status">環境を起動しています...(初回はモデルのロードに時間がかかります)</p>}
         {startError && <p className="error">セッション開始に失敗しました: {startError}</p>}
       </div>
@@ -167,6 +217,7 @@ export default function App() {
     <div className="app session-screen">
       <Toolbar
         taskId={session.taskId}
+        notebookName={notebookName}
         onBackToMain={handleEndSession}
         onReset={handleReset}
         onSaveReplay={handleSaveReplay}

@@ -1,5 +1,6 @@
 interface Props {
   taskId: string;
+  notebookName: string;
   onBackToMain: () => void;
   onReset: () => void;
   onSaveReplay: () => void;
@@ -11,6 +12,7 @@ interface Props {
 
 export default function Toolbar({
   taskId,
+  notebookName,
   onBackToMain,
   onReset,
   onSaveReplay,
@@ -25,7 +27,9 @@ export default function Toolbar({
         <button className="back-btn" onClick={onBackToMain}>
           ← タスク選択に戻る
         </button>
-        <span className="toolbar-task">Task: {taskId}</span>
+        <span className="toolbar-task">
+          {notebookName || "Untitled"} <span className="toolbar-task-id">({taskId})</span>
+        </span>
       </div>
       <div className="toolbar-actions">
         <button onClick={onShowDocs}>利用可能なAPI</button>

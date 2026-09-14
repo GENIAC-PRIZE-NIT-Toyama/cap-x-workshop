@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import { listTasks } from "../api";
+import { listNotebooks, deleteNotebook, type Notebook } from "../notebooks";
 import type { TaskSummary } from "../types";
 
 interface Props {
-  onSelect: (taskId: string) => void;
+  onStartNew: (taskId: string, name: string) => void;
+  onOpenNotebook: (notebook: Notebook) => void;
   busy: boolean;
 }
 
-export default function TaskSelect({ onSelect, busy }: Props) {
+export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [notebooks, setNotebooks] = useState<Notebook[]>(() => listNotebooks());
 
   useEffect(() => {
     listTasks()
@@ -17,12 +21,32 @@ export default function TaskSelect({ onSelect, busy }: Props) {
       .catch((err) => setError(String(err)));
   }, []);
 
+  const taskName = (taskId: string) => tasks?.find((t) => t.task_id === taskId)?.name ?? taskId;
+
+  const handleDelete = (id: string) => {
+    deleteNotebook(id);
+    setNotebooks(listNotebooks());
+  };
+
   return (
     <div className="task-select">
       <h1>CaP-X Workshop</h1>
       <p className="subtitle">
         タスクを選んでセッションを開始してください。使用できるAPIはどのタスクでも共通です。
       </p>
+
+      <div className="notebook-name-field">
+        <label htmlFor="notebook-name">ノートブック名(任意)</label>
+        <input
+          id="notebook-name"
+          type="text"
+          placeholder="例: 実験1"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy}
+        />
+      </div>
+
       {error && <p className="error">タスク一覧の取得に失敗しました: {error}</p>}
       {!tasks && !error && <p>読み込み中...</p>}
       <div className="task-grid">
@@ -31,13 +55,38 @@ export default function TaskSelect({ onSelect, busy }: Props) {
             key={task.task_id}
             className="task-card"
             disabled={busy}
-            onClick={() => onSelect(task.task_id)}
+            onClick={() => onStartNew(task.task_id, name.trim() || task.name)}
           >
             <h2>{task.name}</h2>
             <p>{task.description}</p>
           </button>
         ))}
       </div>
+
+      {notebooks.length > 0 && (
+        <div className="notebook-list">
+          <h2>保存済みノートブック</h2>
+          {notebooks.map((nb) => (
+            <div key={nb.id} className="notebook-row">
+              <div className="notebook-row-info">
+                <span className="notebook-row-name">{nb.name}</span>
+                <span className="notebook-row-meta">
+                  {taskName(nb.taskId)} ・ {new Date(nb.updatedAt).toLocaleString()} ・{" "}
+                  {nb.cells.length}セル
+                </span>
+              </div>
+              <div className="notebook-row-actions">
+                <button disabled={busy} onClick={() => onOpenNotebook(nb)}>
+                  開く
+                </button>
+                <button disabled={busy} className="danger" onClick={() => handleDelete(nb.id)}>
+                  削除
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
