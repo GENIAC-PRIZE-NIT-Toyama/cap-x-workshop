@@ -1,0 +1,5 @@
+```markdown
+export SAM3_SERVICE_URL=http://192.168.0.200:8114
+export GRASPNET_SERVICE_URL=http://192.168.0.200:8115
+export PYROKI_SERVICE_URL=http://192.168.0.200:8116
+```

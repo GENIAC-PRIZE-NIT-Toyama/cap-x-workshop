@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 .env
+.envrc
 .openrouterkey
 .nvinferencekeys
 .capx_skills.json
@@ -47,3 +48,7 @@ wandb/
 *.ico
 *.webp
 check.md
+
+# Workshop WebUI (workshop/)
+_replays/
+*.tsbuildinfo

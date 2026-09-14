@@ -80,7 +80,7 @@ class FrankaRobosuiteCubeLiftLowLevel(RobosuiteBaseEnv):
         else:
             self.robosuite_env = suite.environments.manipulation.lift.Lift(
                 robots=["Panda"],
-                has_renderer=True,
+                has_renderer=False,
                 has_offscreen_renderer=True,
                 camera_names=self.render_camera_names,
                 # camera_segmentations=self.segmentation_level,

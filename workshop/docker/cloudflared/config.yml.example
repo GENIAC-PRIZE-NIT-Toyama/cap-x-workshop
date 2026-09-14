@@ -1,0 +1,19 @@
+# Alternative to the Tunnel Token flow (docker-compose.tunnel.yml): use this
+# if you manage the tunnel via a config file + credentials JSON instead of a
+# dashboard-issued token. See WORKSHOP_WEBUI_SPEC.md section 4.1/§7.
+#
+# To use this instead of TUNNEL_TOKEN:
+#   1. `cloudflared tunnel login` and `cloudflared tunnel create workshop` on a
+#      machine with the `cloudflared` CLI to get a credentials-*.json file.
+#   2. Copy this file to config.yml, fill in `tunnel` and `credentials-file`.
+#   3. Mount both files into the container and change the compose command to
+#      `tunnel --config /etc/cloudflared/config.yml run`.
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Single ingress rule: Backend serves the built WebUI from the same origin
+  # (see WORKSHOP_WEBUI_SPEC.md section 2/3.2), so only one hostname is needed.
+  - hostname: workshop.example.com
+    service: http://localhost:8200
+  - service: http_status:404

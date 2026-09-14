@@ -97,7 +97,7 @@ class RobosuiteHandoverEnv(BaseEnv):
             self.robosuite_env = suite.environments.manipulation.two_arm_handover.TwoArmHandover(
                 robots=["Panda", "Panda"],  # Two separate robots for handover
                 env_configuration="opposed",  # Robots on opposite sides of table
-                has_renderer=True,
+                has_renderer=False,
                 has_offscreen_renderer=True,
                 camera_names=self.render_camera_names,
                 camera_segmentations=self.segmentation_level,

@@ -1,0 +1,51 @@
+# Always-on workshop infrastructure. Two kinds of service here, both fully
+# declarative — no root/iptables setup script needed (see
+# WORKSHOP_WEBUI_SPEC.md's sandboxing addendum):
+#
+# 1. cloudflared — publishes the backend (localhost:8200) to the internet.
+#
+# 2. perception-proxy-* — dumb, fixed-destination TCP relays to the real
+#    SAM3/GraspNet/PyRoKi hosts (see WORKSHOP_ENDPOINT.md). They always
+#    forward to the same hardcoded upstream, so they cannot be used for
+#    SSRF/exfiltration no matter what a sandboxed session sends them.
+#
+#    Each participant session gets its own per-session Docker network
+#    created by workshop/backend/session_manager.py with `internal: true`
+#    (no route to the internet or LAN at all), and session_manager.py
+#    connects these three proxy containers onto that network at session
+#    start (and disconnects them at session end). That means a sandboxed
+#    session container can reach the Perception API *and nothing else* — not
+#    the internet, not the LAN, not the Docker host, and not other
+#    participants' sessions (which each live on their own separate network).
+#
+# Usage:
+#   cd workshop/docker
+#   cp .env.example .env   # fill in CLOUDFLARE_TUNNEL_TOKEN
+#   docker compose up -d
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: capx-workshop-cloudflared
+    network_mode: host
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+
+  perception-proxy-sam3:
+    image: alpine/socat
+    container_name: capx-workshop-proxy-sam3
+    command: ["tcp-listen:8114,fork,reuseaddr", "tcp:${SAM3_UPSTREAM:-192.168.0.200:8114}"]
+    restart: unless-stopped
+
+  perception-proxy-graspnet:
+    image: alpine/socat
+    container_name: capx-workshop-proxy-graspnet
+    command: ["tcp-listen:8115,fork,reuseaddr", "tcp:${GRASPNET_UPSTREAM:-192.168.0.200:8115}"]
+    restart: unless-stopped
+
+  perception-proxy-pyroki:
+    image: alpine/socat
+    container_name: capx-workshop-proxy-pyroki
+    command: ["tcp-listen:8116,fork,reuseaddr", "tcp:${PYROKI_UPSTREAM:-192.168.0.200:8116}"]
+    restart: unless-stopped

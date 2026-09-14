@@ -33,6 +33,7 @@ from capx.integrations.franka.common import (
     select_instance_from_box,
 )
 from capx.utils.visualization_utils import (
+    draw_grasp_points,
     draw_oriented_bounding_box,
     overlay_segmentation_masks,
 )
@@ -403,8 +404,15 @@ class FrankaControlApi(ApiBase):
         n_candidates = len(self._env.grasp_scores)
         best_score = float(self._env.grasp_scores.max())
         pos_str = np.array2string(grasp_sample_tf_world.wxyz_xyz[-3:], precision=4)
+        grasp_vis = draw_grasp_points(
+            rgb,
+            self._env.grasp_contact_pts,
+            self._env.grasp_scores,
+            obs["robot0_robotview"]["intrinsics"],
+        )
         self._log_step_update(
-            text=f"{n_candidates} candidates, best score={best_score:.3f}\nGrasp position: {pos_str} ({elapsed:.1f}s)"
+            text=f"{n_candidates} candidates, best score={best_score:.3f}\nGrasp position: {pos_str} ({elapsed:.1f}s)",
+            images=grasp_vis,
         )
 
         # print(f"sample_grasp_pose in {time.time() - start_time} seconds")
