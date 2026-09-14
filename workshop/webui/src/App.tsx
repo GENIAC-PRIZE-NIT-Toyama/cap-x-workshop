@@ -44,7 +44,11 @@ export default function App() {
     if (!session) return;
     const ws = new WebSocket(streamUrl(session.sessionId));
     ws.onmessage = (event) => {
-      setFrames((prev) => ({ ...prev, robot0_robotview: event.data as string }));
+      // {"camera": "...", "image": "<base64>"} — the camera key varies per
+      // task (e.g. nut_assembly uses "birdview", two_arm_handover uses
+      // "agentview"), so it must come from the message, never be assumed.
+      const data = JSON.parse(event.data as string) as { camera: string; image: string };
+      setFrames((prev) => ({ ...prev, [data.camera]: data.image }));
     };
     return () => ws.close();
   }, [session?.sessionId]);

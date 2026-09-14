@@ -2,6 +2,7 @@ export interface TaskSummary {
   task_id: string;
   name: string;
   description: string;
+  featured: boolean;
 }
 
 export interface PerceptionStep {

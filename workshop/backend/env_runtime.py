@@ -155,6 +155,16 @@ class EnvRuntime:
         frames = self._env.get_video_frames_range(index, index + 1)
         return frames[0] if frames else None
 
+    def primary_camera_name(self) -> str:
+        """Which `frames` key the video buffer's recorded frames correspond
+        to — this varies per task (e.g. "robot0_robotview" for the single-arm
+        tasks, "birdview" for nut_assembly, "agentview" for the two-arm
+        tasks; see each simulator's `save_camera_name` in
+        capx/envs/simulators/*.py), so it must never be hardcoded on the
+        frontend.
+        """
+        return getattr(self._env.low_level_env, "save_camera_name", "robot0_robotview")
+
     def replay(self, suffix: str = "combined") -> dict[str, Any]:
         from capx.utils.video_utils import _write_video
 

@@ -84,7 +84,12 @@ def create_app() -> FastAPI:
     async def list_tasks() -> dict:
         return {
             "tasks": [
-                {"task_id": t.task_id, "name": t.name, "description": t.description}
+                {
+                    "task_id": t.task_id,
+                    "name": t.name,
+                    "description": t.description,
+                    "featured": t.featured,
+                }
                 for t in TASKS
             ]
         }

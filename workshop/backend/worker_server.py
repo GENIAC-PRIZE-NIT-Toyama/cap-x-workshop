@@ -90,6 +90,7 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
         never touch the MuJoCo/EGL context directly.
         """
         await websocket.accept()
+        camera_name = runtime.primary_camera_name()
         last_sent = -1
         try:
             while True:
@@ -98,7 +99,11 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
                     last_sent = count - 1
                     frame = await asyncio.to_thread(runtime.recorded_frame, last_sent)
                     if frame is not None:
-                        await websocket.send_text(_encode_rgb_png(frame))
+                        # JSON envelope, not a bare base64 string: which
+                        # `frames` key this belongs to varies per task (see
+                        # EnvRuntime.primary_camera_name()) and must never be
+                        # assumed on the frontend.
+                        await websocket.send_json({"camera": camera_name, "image": _encode_rgb_png(frame)})
                 await asyncio.sleep(STREAM_POLL_INTERVAL_SECONDS)
         except WebSocketDisconnect:
             pass

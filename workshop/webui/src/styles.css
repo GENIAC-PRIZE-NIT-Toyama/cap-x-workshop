@@ -201,11 +201,19 @@ pre {
   box-shadow: 0 0 0 3px var(--primary-tint);
 }
 
+.task-section-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 28px 0 12px;
+}
+
 .task-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
-  margin-top: 20px;
 }
 
 .task-card {
@@ -227,6 +235,11 @@ pre {
   box-shadow: var(--shadow-md);
   border-color: var(--primary);
   color: var(--text);
+}
+
+.task-card.featured {
+  border-color: var(--primary);
+  background: linear-gradient(180deg, var(--primary-tint), var(--surface) 60%);
 }
 
 .task-card:disabled {

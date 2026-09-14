@@ -9,6 +9,36 @@ interface Props {
   busy: boolean;
 }
 
+function TaskGrid({
+  tasks,
+  busy,
+  name,
+  featured,
+  onStartNew,
+}: {
+  tasks: TaskSummary[];
+  busy: boolean;
+  name: string;
+  featured?: boolean;
+  onStartNew: (taskId: string, name: string) => void;
+}) {
+  return (
+    <div className="task-grid">
+      {tasks.map((task) => (
+        <button
+          key={task.task_id}
+          className={featured ? "task-card featured" : "task-card"}
+          disabled={busy}
+          onClick={() => onStartNew(task.task_id, name.trim() || task.name)}
+        >
+          <h2>{task.name}</h2>
+          <p>{task.description}</p>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,40 +58,15 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
     setNotebooks(listNotebooks());
   };
 
+  const featuredTasks = tasks?.filter((t) => t.featured) ?? [];
+  const otherTasks = tasks?.filter((t) => !t.featured) ?? [];
+
   return (
     <div className="task-select">
       <h1>CaP-X Workshop</h1>
       <p className="subtitle">
         タスクを選んでセッションを開始してください。使用できるAPIはどのタスクでも共通です。
       </p>
-
-      <div className="notebook-name-field">
-        <label htmlFor="notebook-name">ノートブック名(任意)</label>
-        <input
-          id="notebook-name"
-          type="text"
-          placeholder="例: 実験1"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={busy}
-        />
-      </div>
-
-      {error && <p className="error">タスク一覧の取得に失敗しました: {error}</p>}
-      {!tasks && !error && <p>読み込み中...</p>}
-      <div className="task-grid">
-        {tasks?.map((task) => (
-          <button
-            key={task.task_id}
-            className="task-card"
-            disabled={busy}
-            onClick={() => onStartNew(task.task_id, name.trim() || task.name)}
-          >
-            <h2>{task.name}</h2>
-            <p>{task.description}</p>
-          </button>
-        ))}
-      </div>
 
       {notebooks.length > 0 && (
         <div className="notebook-list">
@@ -86,6 +91,35 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
             </div>
           ))}
         </div>
+      )}
+
+      <div className="notebook-name-field">
+        <label htmlFor="notebook-name">新規ノートブック名(任意)</label>
+        <input
+          id="notebook-name"
+          type="text"
+          placeholder="例: 実験1"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy}
+        />
+      </div>
+
+      {error && <p className="error">タスク一覧の取得に失敗しました: {error}</p>}
+      {!tasks && !error && <p>読み込み中...</p>}
+
+      {featuredTasks.length > 0 && (
+        <>
+          <h2 className="task-section-title">おすすめタスク</h2>
+          <TaskGrid tasks={featuredTasks} busy={busy} name={name} featured onStartNew={onStartNew} />
+        </>
+      )}
+
+      {otherTasks.length > 0 && (
+        <>
+          <h2 className="task-section-title">その他のタスク</h2>
+          <TaskGrid tasks={otherTasks} busy={busy} name={name} onStartNew={onStartNew} />
+        </>
       )}
     </div>
   );
