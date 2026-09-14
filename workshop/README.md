@@ -47,7 +47,7 @@ Requirements on the host: Docker with `nvidia-container-toolkit` installed
 without `sudo` (i.e. be in the `docker` group), since `session_manager.py`
 shells out to the `docker` CLI directly.
 
-## Running locally (dev)
+## Running locally
 
 Backend (no Robosuite venv needed — see Layout above):
 
@@ -56,9 +56,8 @@ uv sync   # base deps only, no --extra
 uv run python -m workshop.backend.main  # http://localhost:8200 (matches the Cloudflare Tunnel origin)
 ```
 
-This runs in the foreground and dies with your shell/session — fine for
-iterating, not for the actual workshop. See "Running as a service" below for
-that.
+This runs in the foreground and dies with your shell/session — run it under
+`nohup`/`tmux`/`screen` (or similar) if you need it to survive a logout.
 
 WebUI (dev server, proxies /api to the backend):
 
@@ -76,35 +75,11 @@ cd workshop/webui && npm install && npm run build
 # once that directory exists (see workshop/backend/app.py).
 ```
 
-## Running as a service
-
 The backend itself is **not** containerized (see Layout above — it only
 needs to shell out to `docker` to manage session containers, and doing that
 from inside another container adds Docker-in-Docker complexity for no
-benefit here). For the actual workshop, run it under systemd instead of a
-bare `uv run` in a terminal, so it survives logout and restarts on crash.
-
-A unit file is provided at `workshop/backend/capx-workshop-backend.service`.
-Install it system-wide (needs sudo once; runs at boot, independent of any
-user session — this is the one to use for the real event):
-
-```bash
-sudo cp workshop/backend/capx-workshop-backend.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now capx-workshop-backend.service
-sudo systemctl status capx-workshop-backend.service
-journalctl -u capx-workshop-backend.service -f   # logs
-```
-
-(If you'd rather not use sudo, the same unit works as a per-user service —
-copy it to `~/.config/systemd/user/` instead and use `systemctl --user
-enable --now ...`; just note that without `loginctl enable-linger <user>`
-(also needs sudo) it stops when that user logs out, which defeats the
-point for an unattended workshop machine.)
-
-Either way, `docker compose up -d` in `workshop/docker/` (cloudflared +
-Perception API proxies) should already be running independently — the
-systemd unit only manages the backend process, not those containers.
+benefit here). `docker compose up -d` in `workshop/docker/` (cloudflared +
+Perception API proxies) runs independently of the backend process either way.
 
 ## Sandboxing
 
