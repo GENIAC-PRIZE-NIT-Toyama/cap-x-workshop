@@ -59,6 +59,17 @@ uv run python -m workshop.backend.main  # http://localhost:8200 (matches the Clo
 This runs in the foreground and dies with your shell/session — run it under
 `nohup`/`tmux`/`screen` (or similar) if you need it to survive a logout.
 
+On a multi-GPU host, pin session containers to specific GPUs by UUID
+(`nvidia-smi -L`) instead of letting every session see every GPU:
+
+```bash
+uv run python -m workshop.backend.main --gpu-uuids "GPU-xxxx...,GPU-yyyy..."
+```
+
+Sessions round-robin across the listed UUIDs as they start. Omit the flag
+(the default) to leave every session on `NVIDIA_VISIBLE_DEVICES=all`, which
+is fine for a single-GPU host.
+
 WebUI (dev server, proxies /api to the backend):
 
 ```bash

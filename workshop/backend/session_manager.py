@@ -131,12 +131,28 @@ async def _run(cmd: list[str]) -> tuple[int, str, str]:
 
 
 class SessionManager:
-    def __init__(self, video_root: Path, repo_root: Path) -> None:
+    def __init__(self, video_root: Path, repo_root: Path, gpu_uuids: list[str] | None = None) -> None:
         self._sessions: dict[str, Session] = {}
         self._ports = PortAllocator()
         self._video_root = video_root
         self._repo_root = repo_root
         self._io_network_ready = False
+        self._gpu_uuids = gpu_uuids or []
+        self._gpu_index = 0
+
+    def _next_nvidia_visible_devices(self) -> str:
+        """Which GPU(s) the next session container may use.
+
+        Round-robins across `self._gpu_uuids` if any were configured
+        (`--gpu-uuids` in main.py — a UUID from `nvidia-smi -L`), so sessions
+        spread across a multi-GPU host instead of piling onto one. With none
+        configured, every session sees every GPU (`all`) — fine for a
+        single-GPU host."""
+        if not self._gpu_uuids:
+            return "all"
+        uuid_str = self._gpu_uuids[self._gpu_index % len(self._gpu_uuids)]
+        self._gpu_index += 1
+        return uuid_str
 
     async def _ensure_io_network(self) -> None:
         if self._io_network_ready:
@@ -251,7 +267,7 @@ class SessionManager:
                 "--runtime",
                 "nvidia",
                 "-e",
-                "NVIDIA_VISIBLE_DEVICES=all",
+                f"NVIDIA_VISIBLE_DEVICES={self._next_nvidia_visible_devices()}",
                 "-e",
                 "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics",
                 "-v",

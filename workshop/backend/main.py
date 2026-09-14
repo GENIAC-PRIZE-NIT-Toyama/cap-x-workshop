@@ -1,13 +1,13 @@
 """CLI entry point for the workshop backend.
 
-Run from the repo root (so `capx` and `workshop` both resolve as packages),
-inside the Robosuite venv (`uv sync --extra robosuite`):
+Run from the repo root (so `capx` and `workshop` both resolve as packages):
 
     uv run python -m workshop.backend.main
 
-Perception API endpoints are read from the standard `*_SERVICE_URL`
-environment variables (see .envrc.example / workshop/backend/.envrc.example)
-— unchanged from the main capx setup (WORKSHOP_WEBUI_SPEC.md section 4).
+The backend itself doesn't need capx or the Robosuite venv (see
+workshop/README.md's Layout section) — only the sandbox worker image does.
+Perception API access is via the fixed `perception-proxy-*` containers (see
+session_manager.py's module docstring), not host env vars.
 """
 
 from __future__ import annotations
@@ -38,6 +38,15 @@ class ServerArgs:
     reload: bool = False
     """Enable auto-reload for development."""
 
+    gpu_uuids: str = ""
+    """Comma-separated GPU UUIDs (`nvidia-smi -L`, e.g.
+    "GPU-a3d5df43-3bd7-e5f3-36be-58142a58a0d2") that session containers are
+    allowed to use, assigned round-robin as sessions start — one UUID means
+    every session pins to that one GPU; several means sessions spread across
+    them. Leave empty (the default) to let every session see every GPU on
+    the host (`NVIDIA_VISIBLE_DEVICES=all`), which is fine for a single-GPU
+    host or when you don't need session-to-GPU isolation."""
+
 
 def main(args: ServerArgs | None = None) -> None:
     if args is None:
@@ -46,8 +55,11 @@ def main(args: ServerArgs | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    app = create_app()
+    gpu_uuids = [u.strip() for u in args.gpu_uuids.split(",") if u.strip()]
+    app = create_app(gpu_uuids=gpu_uuids or None)
     logger.info(f"Starting CaP-X Workshop backend on http://{args.host}:{args.port}")
+    if gpu_uuids:
+        logger.info(f"Session containers will round-robin across GPUs: {gpu_uuids}")
     logger.info("WebUI dev server should be running on http://localhost:5173")
 
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)

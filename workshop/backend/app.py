@@ -47,7 +47,7 @@ def _require_session(app: FastAPI, session_id: str) -> SessionManager:
     return manager
 
 
-def create_app() -> FastAPI:
+def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
     app = FastAPI(title="CaP-X Workshop WebUI Backend")
 
     # Dev-only: the Vite dev server runs on a different origin. In production
@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.state.manager = SessionManager(video_root=VIDEO_ROOT, repo_root=REPO_ROOT)
+    app.state.manager = SessionManager(video_root=VIDEO_ROOT, repo_root=REPO_ROOT, gpu_uuids=gpu_uuids)
 
     @app.on_event("startup")
     async def _start_reaper() -> None:
