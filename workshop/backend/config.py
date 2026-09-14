@@ -70,6 +70,7 @@ TASKS: list[TaskSpec] = [
             "Cube Restackより工程がシンプルです。"
         ),
         config_path="env_configs/cube_stack/franka_robosuite_cube_stack.yaml",
+        featured=True,
     ),
     TaskSpec(
         task_id="nut_assembly",
