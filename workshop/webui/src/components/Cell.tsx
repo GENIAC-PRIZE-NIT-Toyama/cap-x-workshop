@@ -1,5 +1,9 @@
-import Editor from "@monaco-editor/react";
+import { useCallback, useRef, useState } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import type { CellResult } from "../types";
+
+const MIN_EDITOR_HEIGHT = 60;
+const MAX_EDITOR_HEIGHT = 520;
 
 export interface CellState {
   id: string;
@@ -19,6 +23,26 @@ interface Props {
 }
 
 export default function Cell({ index, cell, onChange, onRun, onDelete, canDelete }: Props) {
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const [height, setHeight] = useState(MIN_EDITOR_HEIGHT);
+
+  // Grow the editor with the number of lines instead of a fixed height —
+  // getContentHeight() already accounts for line count/wrapping, so this is
+  // just clamped to a sane [min, max] range (beyond max it scrolls inside
+  // the fixed-height box like a normal editor).
+  const updateHeight = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const contentHeight = editor.getContentHeight();
+    setHeight(Math.min(MAX_EDITOR_HEIGHT, Math.max(MIN_EDITOR_HEIGHT, contentHeight)));
+  }, []);
+
+  const handleMount: OnMount = (editor) => {
+    editorRef.current = editor;
+    updateHeight();
+    editor.onDidContentSizeChange(updateHeight);
+  };
+
   return (
     <div className="cell">
       <div className="cell-header">
@@ -31,10 +55,11 @@ export default function Cell({ index, cell, onChange, onRun, onDelete, canDelete
         </button>
       </div>
       <Editor
-        height="160px"
+        height={`${height}px`}
         defaultLanguage="python"
         theme="vs-dark"
         value={cell.code}
+        onMount={handleMount}
         onChange={(value) => onChange(value ?? "")}
         options={{ minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false }}
       />

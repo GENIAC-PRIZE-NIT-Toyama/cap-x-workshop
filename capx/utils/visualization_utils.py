@@ -258,3 +258,64 @@ def render_cylinder_axis(
     img_result = img_bg.copy()
     img_result[mask] = (color[mask] * opacity + img_result[mask] * (1 - opacity)).astype(np.uint8)
     return img_result
+
+
+# ---------------------------------------------------------------------------
+# Contact-GraspNet candidate overlay
+# ---------------------------------------------------------------------------
+
+def draw_grasp_points(
+    image: np.ndarray,
+    contact_pts: np.ndarray,
+    scores: np.ndarray,
+    intrinsics: np.ndarray,
+    top_k: int = 10,
+    color: tuple[int, int, int] = (255, 90, 90),
+    best_color: tuple[int, int, int] = (0, 230, 0),
+    radius: int = 6,
+) -> np.ndarray:
+    """Project Contact-GraspNet candidate contact points onto an image.
+
+    Args:
+        image: (H, W, 3) uint8 RGB image, in the same camera frame the
+            points were computed in (e.g. obs["robot0_robotview"]["images"]["rgb"]).
+        contact_pts: Contact points in camera frame, as returned by the
+            GraspNet client's ``plan()``. Shape (K, 2, 3) (two per grasp, one
+            per gripper finger) or (K, 3) (one point per grasp) — either is
+            accepted; (K, 2, 3) is reduced to its per-grasp midpoint.
+        scores: (K,) grasp confidence scores, same ordering as contact_pts.
+        intrinsics: (3, 3) camera intrinsic matrix.
+        top_k: Only the top-k highest-scoring candidates are drawn, to avoid
+            cluttering the image.
+        color: RGB colour for non-best candidates.
+        best_color: RGB colour for the single highest-scoring candidate.
+        radius: Marker radius in pixels for non-best candidates.
+
+    Returns:
+        (H, W, 3) annotated image copy.
+    """
+    img_draw = image.copy()
+    scores = np.asarray(scores)
+    if scores.size == 0:
+        return img_draw
+
+    pts = np.asarray(contact_pts)
+    if pts.ndim == 3:
+        pts = pts.mean(axis=1)  # (K, 2, 3) -> per-grasp midpoint
+
+    best_idx = int(np.argmax(scores))
+    order = np.argsort(scores)[::-1][:top_k]
+    h, w = image.shape[:2]
+
+    for idx in order:
+        point = pts[idx]
+        proj = intrinsics @ point
+        if proj[2] <= 0:
+            continue
+        x, y = int(proj[0] / proj[2]), int(proj[1] / proj[2])
+        if not (0 <= x < w and 0 <= y < h):
+            continue
+        is_best = idx == best_idx
+        cv2.circle(img_draw, (x, y), radius + 3 if is_best else radius, best_color if is_best else color, thickness=2)
+
+    return img_draw

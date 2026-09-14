@@ -28,7 +28,6 @@ export default function App() {
 
   const [frames, setFrames] = useState<Record<string, string>>({});
   const [cells, setCells] = useState<CellState[]>([newCell()]);
-  const [perceptionVisible, setPerceptionVisible] = useState(false);
   const [perceptionSteps, setPerceptionSteps] = useState<PerceptionStep[]>([]);
   const [resetting, setResetting] = useState(false);
   const [savingReplay, setSavingReplay] = useState(false);
@@ -188,11 +187,7 @@ export default function App() {
           </div>
         </div>
         <div className="pane pane-perception">
-          <PerceptionPanel
-            visible={perceptionVisible}
-            onToggle={() => setPerceptionVisible((v) => !v)}
-            steps={perceptionSteps}
-          />
+          <PerceptionPanel steps={perceptionSteps} />
         </div>
       </div>
     </div>
