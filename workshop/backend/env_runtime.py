@@ -138,6 +138,23 @@ class EnvRuntime:
     def observation(self) -> dict[str, Any]:
         return {"frames": _extract_frames(self._env, self._last_obs)}
 
+    def recorded_frame_count(self) -> int:
+        """Number of frames captured into the video buffer so far.
+
+        This grows *during* run_cell() (robosuite's internal simulate loop
+        appends to it on every sub-sampled sim step — see
+        RobosuiteBaseEnv._record_frame()), not just after it returns. Used by
+        worker_server.py's /stream websocket to detect and push new frames
+        while a cell — e.g. a goto_pose() spanning hundreds of sim steps — is
+        still executing, so participants see the robot actually move instead
+        of only a before/after snapshot.
+        """
+        return self._env.get_video_frame_count()
+
+    def recorded_frame(self, index: int) -> np.ndarray | None:
+        frames = self._env.get_video_frames_range(index, index + 1)
+        return frames[0] if frames else None
+
     def replay(self, suffix: str = "combined") -> dict[str, Any]:
         from capx.utils.video_utils import _write_video
 

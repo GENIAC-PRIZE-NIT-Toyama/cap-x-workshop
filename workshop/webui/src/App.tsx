@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import { closeSession, createSession, fetchReplayUrl, resetSession, runCell } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { closeSession, createSession, fetchReplayUrl, resetSession, runCell, streamUrl } from "./api";
 import TaskSelect from "./components/TaskSelect";
 import CameraView from "./components/CameraView";
 import Cell, { type CellState } from "./components/Cell";
@@ -33,6 +33,18 @@ export default function App() {
   const [savingReplay, setSavingReplay] = useState(false);
   const [docsVisible, setDocsVisible] = useState(false);
   const replayUrlRef = useRef<string | null>(null);
+
+  // Live camera feed: pushes every newly-recorded frame — including
+  // mid-motion ones — while a cell is running, not just the single
+  // before/after snapshot the cell's own HTTP response carries.
+  useEffect(() => {
+    if (!session) return;
+    const ws = new WebSocket(streamUrl(session.sessionId));
+    ws.onmessage = (event) => {
+      setFrames((prev) => ({ ...prev, robot0_robotview: event.data as string }));
+    };
+    return () => ws.close();
+  }, [session?.sessionId]);
 
   const handleSelectTask = useCallback(async (taskId: string) => {
     setStarting(true);

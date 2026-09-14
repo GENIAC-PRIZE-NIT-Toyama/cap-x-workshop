@@ -14,11 +14,13 @@ import logging
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, HTTPException
+import websockets
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from websockets.asyncio.client import connect as ws_connect
 
 from workshop.backend.config import REPO_ROOT, TASKS, get_task, resolve_config_path
 from workshop.backend.session_manager import SessionManager
@@ -121,6 +123,56 @@ def create_app() -> FastAPI:
     async def get_observation(session_id: str) -> dict:
         manager = _require_session(app, session_id)
         return await manager.observation(session_id)
+
+    @app.websocket("/api/sessions/{session_id}/stream")
+    async def stream_camera(websocket: WebSocket, session_id: str) -> None:
+        """Reverse-proxies the sandbox container's /stream websocket.
+
+        The container's port is 127.0.0.1-only (never reachable from the
+        browser/LAN — see session_manager.py), so the backend has to relay
+        this itself, the same way capx/web/server.py proxies Viser. Frames
+        keep arriving here *while* a cell is executing (worker_server.py's
+        /run_cell now runs off its event loop specifically so this can keep
+        flowing concurrently), which is what lets the camera view show a
+        robot's motion live instead of only a before/after snapshot.
+        """
+        manager: SessionManager = app.state.manager
+        session = manager.get(session_id)
+        if session is None:
+            await websocket.close(code=4004, reason="Session not found")
+            return
+
+        await websocket.accept()
+        try:
+            upstream = await ws_connect(f"ws://127.0.0.1:{session.host_port}/stream")
+        except Exception as exc:
+            await websocket.close(code=1011, reason=str(exc))
+            return
+
+        async def _upstream_to_client() -> None:
+            try:
+                async for message in upstream:
+                    await websocket.send_text(message)
+            except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+                pass
+
+        async def _client_to_upstream() -> None:
+            # One-directional stream (worker -> browser); this side only
+            # watches for the browser disconnecting so the upstream gets
+            # torn down promptly instead of lingering.
+            try:
+                while True:
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                pass
+
+        done, pending = await asyncio.wait(
+            [asyncio.create_task(_upstream_to_client()), asyncio.create_task(_client_to_upstream())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await upstream.close()
 
     @app.post("/api/sessions/{session_id}/cells/run")
     async def run_cell(session_id: str, request: RunCellRequest) -> dict:

@@ -53,3 +53,11 @@ export async function fetchReplayUrl(sessionId: string): Promise<string> {
 export function closeSession(sessionId: string): Promise<Response> {
   return fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
 }
+
+// window.location-based, not a hardcoded host: this is what lets the stream
+// keep working unchanged behind the Cloudflare Tunnel (wss:// there, ws://
+// in local dev) — see WORKSHOP_WEBUI_SPEC.md section 2.
+export function streamUrl(sessionId: string): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/sessions/${sessionId}/stream`;
+}

@@ -17,18 +17,25 @@ in-app readiness flag.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
 import tyro
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from workshop.backend.env_runtime import EnvRuntime
+from workshop.backend.env_runtime import EnvRuntime, _encode_rgb_png
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# How often the /stream websocket checks for a new frame while idle/running.
+# robosuite's own sub-sampling (RobosuiteBaseEnv._SUBSAMPLE_RATE) already caps
+# how often a new frame actually appears; this just caps how eagerly we poll
+# for one.
+STREAM_POLL_INTERVAL_SECONDS = 0.1
 
 
 class RunCellRequest(BaseModel):
@@ -49,12 +56,16 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
 
     @app.post("/reset")
     async def reset() -> dict:
-        return runtime.reset()
+        return await asyncio.to_thread(runtime.reset)
 
     @app.post("/run_cell")
     async def run_cell(request: RunCellRequest) -> dict:
         try:
-            return runtime.run_cell(request.cell_id, request.code)
+            # Off the event loop: run_cell() blocks for as long as the
+            # participant's code does (goto_pose() alone can be many seconds
+            # of internal simulate-loop stepping), and /stream below needs
+            # the loop free to keep pushing frames while that happens.
+            return await asyncio.to_thread(runtime.run_cell, request.cell_id, request.code)
         except Exception as exc:  # framework-level bug, not a user code error
             # (user code errors are already caught inside CodeExecutionEnvBase
             # and come back as a normal {"ok": False, "stderr": ...} result).
@@ -63,11 +74,34 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
 
     @app.get("/observation")
     async def observation() -> dict:
-        return runtime.observation()
+        return await asyncio.to_thread(runtime.observation)
 
     @app.post("/replay")
     async def replay(request: ReplayRequest) -> dict:
-        return runtime.replay(request.suffix)
+        return await asyncio.to_thread(runtime.replay, request.suffix)
+
+    @app.websocket("/stream")
+    async def stream(websocket: WebSocket) -> None:
+        """Push each newly-recorded frame as it appears — including the
+        transitional frames from mid-motion, not just the frame at the start
+        and end of a cell. Reading recorded_frame_count()/recorded_frame()
+        concurrently with run_cell() running in another thread is safe: they
+        only do plain list len()/slicing on the frame buffer (GIL-protected),
+        never touch the MuJoCo/EGL context directly.
+        """
+        await websocket.accept()
+        last_sent = -1
+        try:
+            while True:
+                count = runtime.recorded_frame_count()
+                if count > 0 and count - 1 != last_sent:
+                    last_sent = count - 1
+                    frame = await asyncio.to_thread(runtime.recorded_frame, last_sent)
+                    if frame is not None:
+                        await websocket.send_text(_encode_rgb_png(frame))
+                await asyncio.sleep(STREAM_POLL_INTERVAL_SECONDS)
+        except WebSocketDisconnect:
+            pass
 
     return app
 

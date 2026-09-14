@@ -9,7 +9,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": "http://localhost:8200",
+      // ws: true so the /api/sessions/{id}/stream websocket also proxies in
+      // dev (Vite's http-proxy doesn't upgrade websocket connections unless
+      // told to) — production doesn't need this, the backend serves the
+      // built app from the same origin (see api.ts's streamUrl()).
+      "/api": { target: "http://localhost:8200", ws: true },
     },
   },
 });
