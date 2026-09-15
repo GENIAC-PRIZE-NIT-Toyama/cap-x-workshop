@@ -27,6 +27,21 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("theme") as "light" | "dark" | null;
+    if (saved) return saved;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }, []);
+
   const [frames, setFrames] = useState<Record<string, string>>({});
   const [cells, setCells] = useState<CellState[]>([newCell()]);
   const [perceptionSteps, setPerceptionSteps] = useState<PerceptionStep[]>([]);
@@ -147,8 +162,12 @@ export default function App() {
     }
   }, [cells, handleRunCell]);
 
-  const handleAddCell = useCallback(() => {
-    setCells((prev) => [...prev, newCell()]);
+  const handleAddCell = useCallback((index?: number) => {
+    setCells((prev) => {
+      const next = [...prev];
+      next.splice(index ?? next.length, 0, newCell());
+      return next;
+    });
   }, []);
 
   const handleDeleteCell = useCallback((id: string) => {
@@ -170,6 +189,19 @@ export default function App() {
       setResetting(false);
     }
   }, [session]);
+
+  const handleResetAndRunAll = useCallback(async () => {
+    await handleReset();
+    await handleRunAll();
+  }, [handleReset, handleRunAll]);
+
+  const handleResetAndRunCell = useCallback(
+    async (id: string) => {
+      await handleReset();
+      await handleRunCell(id);
+    },
+    [handleReset, handleRunCell],
+  );
 
   const handleSaveReplay = useCallback(async () => {
     if (!session) return;
@@ -222,6 +254,8 @@ export default function App() {
       <Toolbar
         taskId={session.taskId}
         notebookName={notebookName}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onBackToMain={handleEndSession}
         onReset={handleReset}
         onSaveReplay={handleSaveReplay}
@@ -237,21 +271,41 @@ export default function App() {
           <CameraView frames={frames} />
         </div>
         <div className="pane pane-editor">
-          {cells.map((cell, i) => (
-            <Cell
-              key={cell.id}
-              index={i}
-              cell={cell}
-              onChange={(code) => updateCell(cell.id, { code })}
-              onRun={() => handleRunCell(cell.id)}
-              onDelete={() => handleDeleteCell(cell.id)}
-              canDelete={cells.length > 1}
-            />
-          ))}
-          <div className="cell-actions">
-            <button onClick={handleAddCell}>+ セル追加</button>
-            <button onClick={handleRunAll}>Run All</button>
+          <div className="editor-header">
+            <div>
+              <button className="run-btn" style={{marginRight: "8px"}} onClick={handleRunAll} disabled={resetting}>
+                ▶ Run All
+              </button>
+              <button
+                className="reset-run-btn"
+                onClick={handleResetAndRunAll}
+                disabled={resetting}
+              >
+                {resetting ? "リセット中..." : "環境リセット & Run All"}
+              </button>
+            </div>
+            <span className="editor-title">セル数: {cells.length}</span>
           </div>
+          <div className="cell-divider">
+            <button onClick={() => handleAddCell(0)}>+ コード</button>
+          </div>
+          {cells.map((cell, i) => (
+            <div key={cell.id} className="cell-wrapper">
+              <Cell
+                index={i}
+                cell={cell}
+                onChange={(code) => updateCell(cell.id, { code })}
+                onRun={() => handleRunCell(cell.id)}
+                onResetAndRun={() => handleResetAndRunCell(cell.id)}
+                onDelete={() => handleDeleteCell(cell.id)}
+                canDelete={cells.length > 1}
+                resetting={resetting}
+              />
+              <div className="cell-divider">
+                <button onClick={() => handleAddCell(i + 1)}>+ コード</button>
+              </div>
+            </div>
+          ))}
         </div>
         <div className="pane pane-perception">
           <PerceptionPanel steps={perceptionSteps} />
