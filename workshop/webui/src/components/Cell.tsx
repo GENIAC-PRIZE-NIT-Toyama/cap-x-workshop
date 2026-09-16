@@ -16,6 +16,7 @@ export interface CellState {
 interface Props {
   index: number;
   cell: CellState;
+  theme: "light" | "dark";
   onChange: (code: string) => void;
   onRun: () => void;
   onResetAndRun: () => void;
@@ -28,6 +29,7 @@ interface Props {
 export default function Cell({
   index,
   cell,
+  theme,
   onChange,
   onRun,
   onResetAndRun,
@@ -83,11 +85,11 @@ export default function Cell({
           削除
         </button>
       </div>
-      <div style={{padding: "12px 0", backgroundColor: "#1e1e1e"}}>
+      <div style={{ padding: "12px 0", backgroundColor: theme === "dark" ? "#1e1e1e" : "#fffffe" }}>
         <Editor
           height={`${height}px`}
           defaultLanguage="python"
-          theme="vs-dark"
+          theme={theme === "dark" ? "vs-dark" : "light"}
           value={cell.code}
           onMount={handleMount}
           onChange={(value) => onChange(value ?? "")}

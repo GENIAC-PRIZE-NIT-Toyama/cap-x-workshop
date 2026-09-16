@@ -1,7 +1,10 @@
+import Editor from "@monaco-editor/react";
+
 interface Props {
   visible: boolean;
   docs: string;
   onClose: () => void;
+  theme: "light" | "dark";
 }
 
 // Shows exactly which functions the current task's API tier exposes (name,
@@ -11,7 +14,7 @@ interface Props {
 // get_object_pose(), only plan_grasp() / get_oriented_bounding_box_from_3d_points()),
 // so this is meant to answer "what can I actually call here?" without
 // guessing from example code written for a different tier.
-export default function ApiDocsModal({ visible, docs, onClose }: Props) {
+export default function ApiDocsModal({ visible, docs, onClose, theme }: Props) {
   if (!visible) return null;
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -20,7 +23,24 @@ export default function ApiDocsModal({ visible, docs, onClose }: Props) {
           <h2>利用可能なAPI</h2>
           <button onClick={onClose}>閉じる</button>
         </div>
-        <pre className="api-docs">{docs || "このタスクにはAPIが登録されていません。"}</pre>
+        <div className="api-docs">
+          <Editor
+            height="70vh"
+            language="python"
+            theme={theme === "dark" ? "vs-dark" : "light"}
+            value={docs || "# このタスクにはAPIが登録されていません。"}
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              wordWrap: "on",
+              padding: { top: 12, bottom: 12 },
+              fontSize: 14,
+              lineNumbers: "off",
+              folding: false,
+            }}
+          />
+        </div>
       </div>
     </div>
   );

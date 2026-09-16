@@ -51,6 +51,10 @@ export default function App() {
   const [notebookId, setNotebookId] = useState<string | null>(null);
   const [notebookName, setNotebookName] = useState("");
   const replayUrlRef = useRef<string | null>(null);
+  const activeRunFramesRef = useRef<{ camera: string; image: string }[]>([]);
+  const isCellRunningRef = useRef(false);
+  const [replayFrames, setReplayFrames] = useState<{ camera: string; image: string }[]>([]);
+  const [activeCamera, setActiveCamera] = useState<string>("robot0_robotview");
 
   // Live camera feed: pushes every newly-recorded frame — including
   // mid-motion ones — while a cell is running, not just the single
@@ -64,6 +68,10 @@ export default function App() {
       // "agentview"), so it must come from the message, never be assumed.
       const data = JSON.parse(event.data as string) as { camera: string; image: string };
       setFrames((prev) => ({ ...prev, [data.camera]: data.image }));
+
+      if (isCellRunningRef.current) {
+        activeRunFramesRef.current.push(data);
+      }
     };
     return () => ws.close();
   }, [session?.sessionId]);
@@ -142,18 +150,31 @@ export default function App() {
       const cell = cells.find((c) => c.id === id);
       if (!cell) return;
       updateCell(id, { running: true, error: null });
+      setActiveCamera(replayFrames.length > 0 ? replayFrames[0].camera : "robot0_robotview");
+
+      activeRunFramesRef.current = [];
+      isCellRunningRef.current = true;
+
       try {
         const result = await runCell(session.sessionId, id, cell.code);
+        isCellRunningRef.current = false;
         updateCell(id, { running: false, result });
-        setFrames(result.frames);
+
         if (result.perception_steps.length > 0) {
           setPerceptionSteps((prev) => [...prev, ...result.perception_steps]);
         }
+
+        setFrames(result.frames);
+        if (activeRunFramesRef.current.length > 0) {
+          setReplayFrames([...activeRunFramesRef.current]);
+          setActiveCamera("replay");
+        }
       } catch (err) {
+        isCellRunningRef.current = false;
         updateCell(id, { running: false, error: String(err) });
       }
     },
-    [session, cells, updateCell],
+    [session, cells, updateCell, replayFrames],
   );
 
   const handleRunAll = useCallback(async () => {
@@ -274,11 +295,11 @@ export default function App() {
         resetting={resetting}
         savingReplay={savingReplay}
       />
-      <ApiDocsModal visible={docsVisible} docs={session.apiDocs} onClose={() => setDocsVisible(false)} />
+      <ApiDocsModal visible={docsVisible} docs={session.apiDocs} theme={theme} onClose={() => setDocsVisible(false)} />
       {session.taskPrompt && <p className="task-prompt">{session.taskPrompt}</p>}
       <div className="main-panes">
         <div className="pane pane-camera">
-          <CameraView frames={frames} />
+          <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />
         </div>
         <div className="pane pane-editor">
           <div className="editor-header">
@@ -304,6 +325,7 @@ export default function App() {
               <Cell
                 index={i}
                 cell={cell}
+                theme={theme}
                 onChange={(code) => updateCell(cell.id, { code })}
                 onRun={() => handleRunCell(cell.id)}
                 onResetAndRun={() => handleResetAndRunCell(cell.id)}

@@ -509,6 +509,23 @@ pre {
   border-radius: var(--radius-md);
 }
 
+.replay-player {
+  display: flex;
+  flex-direction: column;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  gap: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
+  margin-top: "-4px";
+}
+
 /* ---------------------------------------------------------------------- */
 /* Code cells                                                             */
 /* ---------------------------------------------------------------------- */
@@ -789,16 +806,12 @@ pre {
 }
 
 .api-docs {
-  white-space: pre-wrap;
-  font-size: 0.8rem;
-  line-height: 1.6;
-  overflow-y: auto;
-  background: var(--surface-alt);
+  flex: 1;
+  min-height: 50vh;
+  margin-top: 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 14px;
-  margin: 0;
-  color: var(--text);
+  border-radius: 4px;
+  overflow: hidden;
 }
 
 /* ---------------------------------------------------------------------- */
