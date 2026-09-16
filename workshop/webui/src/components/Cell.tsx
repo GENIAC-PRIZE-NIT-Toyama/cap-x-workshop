@@ -19,12 +19,23 @@ interface Props {
   onChange: (code: string) => void;
   onRun: () => void;
   onResetAndRun: () => void;
+  onResetAndRunUpTo: () => void;
   onDelete: () => void;
   canDelete: boolean;
   resetting?: boolean;
 }
 
-export default function Cell({ index, cell, onChange, onRun, onResetAndRun, onDelete, canDelete, resetting }: Props) {
+export default function Cell({
+  index,
+  cell,
+  onChange,
+  onRun,
+  onResetAndRun,
+  onResetAndRunUpTo,
+  onDelete,
+  canDelete,
+  resetting,
+}: Props) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [height, setHeight] = useState(MIN_EDITOR_HEIGHT);
 
@@ -56,8 +67,17 @@ export default function Cell({ index, cell, onChange, onRun, onResetAndRun, onDe
           className="reset-run-btn"
           onClick={onResetAndRun}
           disabled={cell.running || resetting}
+          title="環境を初期化して、このセルのみを実行"
         >
-          {resetting ? "リセット中..." : "環境リセット & Run"}
+          {resetting ? "リセット中..." : "リセット&Run"}
+        </button>
+        <button
+          className="reset-run-btn"
+          onClick={onResetAndRunUpTo}
+          disabled={cell.running || resetting}
+          title="環境を初期化して、先頭からこのセルまで順番に実行"
+        >
+          {resetting ? "リセット中..." : "リセット&ここまでRun"}
         </button>
         <button className="delete-btn" onClick={onDelete} disabled={!canDelete || cell.running}>
           削除

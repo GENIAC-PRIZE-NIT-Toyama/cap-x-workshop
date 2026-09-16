@@ -203,6 +203,16 @@ export default function App() {
     [handleReset, handleRunCell],
   );
 
+  const handleResetAndRunUpTo = useCallback(
+    async (targetIndex: number) => {
+      await handleReset();
+      for (let i = 0; i <= targetIndex; i++) {
+        await handleRunCell(cells[i].id);
+      }
+    },
+    [cells, handleReset, handleRunCell],
+  );
+
   const handleSaveReplay = useCallback(async () => {
     if (!session) return;
     // Open the tab synchronously, inside the click's user-gesture chain —
@@ -297,6 +307,7 @@ export default function App() {
                 onChange={(code) => updateCell(cell.id, { code })}
                 onRun={() => handleRunCell(cell.id)}
                 onResetAndRun={() => handleResetAndRunCell(cell.id)}
+                onResetAndRunUpTo={() => handleResetAndRunUpTo(i)}
                 onDelete={() => handleDeleteCell(cell.id)}
                 canDelete={cells.length > 1}
                 resetting={resetting}
