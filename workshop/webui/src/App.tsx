@@ -61,7 +61,8 @@ export default function App() {
   // before/after snapshot the cell's own HTTP response carries.
   useEffect(() => {
     if (!session) return;
-    const ws = new WebSocket(streamUrl(session.sessionId));
+    const url = streamUrl(session.sessionId);
+    const ws = new WebSocket(url);
     ws.onmessage = (event) => {
       // {"camera": "...", "image": "<base64>"} — the camera key varies per
       // task (e.g. nut_assembly uses "birdview", two_arm_handover uses
@@ -70,7 +71,10 @@ export default function App() {
       setFrames((prev) => ({ ...prev, [data.camera]: data.image }));
 
       if (isCellRunningRef.current) {
-        activeRunFramesRef.current.push(data);
+        const prev = activeRunFramesRef.current[activeRunFramesRef.current.length - 1];
+        if (!prev || prev.image !== data.image) {
+          activeRunFramesRef.current.push(data);
+        }
       }
     };
     return () => ws.close();
@@ -90,6 +94,8 @@ export default function App() {
       setFrames(res.frames);
       setCells([newCell()]);
       setPerceptionSteps([]);
+      activeRunFramesRef.current = [];
+      setReplayFrames([]);
       const id = newNotebookId();
       setNotebookId(id);
       setNotebookName(name);
@@ -115,6 +121,8 @@ export default function App() {
       setFrames(res.frames);
       setCells(notebook.cells.length > 0 ? notebook.cells.map((code) => newCell(code)) : [newCell()]);
       setPerceptionSteps([]);
+      activeRunFramesRef.current = [];
+      setReplayFrames([]);
       setNotebookId(notebook.id);
       setNotebookName(notebook.name);
     } catch (err) {
@@ -152,11 +160,11 @@ export default function App() {
       updateCell(id, { running: true, error: null });
       setActiveCamera(replayFrames.length > 0 ? replayFrames[0].camera : "robot0_robotview");
 
-      activeRunFramesRef.current = [];
       isCellRunningRef.current = true;
 
       try {
         const result = await runCell(session.sessionId, id, cell.code);
+        await new Promise((resolve) => setTimeout(resolve, 250));
         isCellRunningRef.current = false;
         updateCell(id, { running: false, result });
 
@@ -165,6 +173,14 @@ export default function App() {
         }
 
         setFrames(result.frames);
+        if (result.frames && Object.keys(result.frames).length > 0) {
+          const cam = Object.keys(result.frames)[0];
+          const lastImg = result.frames[cam];
+          const prev = activeRunFramesRef.current[activeRunFramesRef.current.length - 1];
+          if (!prev || prev.image !== lastImg) {
+            activeRunFramesRef.current.push({ camera: cam, image: lastImg });
+          }
+        }
         if (activeRunFramesRef.current.length > 0) {
           setReplayFrames([...activeRunFramesRef.current]);
           setActiveCamera("replay");
@@ -199,6 +215,9 @@ export default function App() {
     if (!session) return;
     setResetting(true);
     try {
+      activeRunFramesRef.current = [];
+      setReplayFrames([]);
+      setActiveCamera("robot0_robotview");
       const res = await resetSession(session.sessionId);
       setFrames(res.frames);
       // Keep the written code — only the environment and each cell's stale
@@ -262,6 +281,8 @@ export default function App() {
   const handleEndSession = useCallback(async () => {
     if (!session) return;
     await closeSession(session.sessionId).catch(() => {});
+    activeRunFramesRef.current = [];
+    setReplayFrames([]);
     setSession(null);
     setFrames({});
     setCells([newCell()]);

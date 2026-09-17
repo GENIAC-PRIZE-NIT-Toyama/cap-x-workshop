@@ -61,12 +61,12 @@ function ReplayPlayer({ frames }: { frames: { camera: string; image: string }[] 
       <div className="replay-controls">
         <button onClick={() => setPlaying(!playing)} style={{ width: "80px", cursor: "pointer" }}>{playing ? "⏸ 停止" : "▶ 再生"}</button>
         <button onClick={() => { setPlaying(false); setIndex((i) => Math.max(0, i - 1)); }} style={{ cursor: "pointer" }}>❘◀</button>
-        <button onClick={() => { setPlaying(false); setIndex((i) => Math.min(frames.length - 1, i + 1)); }} style={{ cursor: "pointer" }}>▶❘</button>
+        <button onClick={() => { setPlaying(false); setIndex((i) => Math.min(Math.max(0, frames.length - 1), i + 1)); }} style={{ cursor: "pointer" }}>▶❘</button>
         <input 
           type="range" 
           min={0} 
-          max={frames.length - 1} 
-          value={index} 
+          max={Math.max(0, frames.length - 1)} 
+          value={Math.min(index, Math.max(0, frames.length - 1))} 
           onChange={(e) => { setPlaying(false); setIndex(parseInt(e.target.value, 10)); }} 
           style={{ flex: 1, cursor: "pointer" }}
         />
