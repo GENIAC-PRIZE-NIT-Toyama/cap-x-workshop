@@ -4,11 +4,38 @@
 // artifact/browser-storage conventions) — never shared between browsers or
 // sessions, and can come back empty (private browsing, cleared site data).
 
+// "manual" is the original hand-written Perception/Control Primitive
+// notebook (unchanged). "prompt" is the LLM prompt-engineering notebook:
+// one prompt + one generated code block per "experiment", with an optional
+// chain of manual self-refine turns. A future "agent" mode can be added
+// here without touching either of these.
+export type NotebookMode = "manual" | "prompt";
+
+export interface GenerationSettings {
+  temperature: number; // kept in an object (not a bare field) so future
+  // params (top_p, max_tokens, ...) slot in without a schema migration
+}
+
+export interface PromptTurn {
+  userText: string; // the prompt the participant actually sent (freely edited)
+  settings: GenerationSettings;
+  llmRawResponse: string; // full LLM output for this turn
+  extractedCode: string; // extracted (and possibly hand-edited) code block
+  lastRun?: { stdout: string; stderr: string }; // most recent Reset&Run result for this turn — images/video are never persisted
+}
+
+export interface PromptExperiment {
+  id: string;
+  turns: PromptTurn[]; // turns[0] = initial prompt; turns[1..] = self-refine turns
+}
+
 export interface Notebook {
   id: string;
   name: string;
   taskId: string;
-  cells: string[]; // code only — execution results aren't persisted
+  mode: NotebookMode;
+  cells: string[]; // code only — execution results aren't persisted. Used when mode === "manual"
+  experiments?: PromptExperiment[]; // used when mode === "prompt"
   updatedAt: string; // ISO timestamp
 }
 
@@ -19,7 +46,10 @@ function readAll(): Notebook[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Older saved notebooks predate `mode` — treat them as "manual" so they
+    // keep opening in the original UI unchanged.
+    return parsed.map((nb) => ({ mode: "manual" as const, ...nb }));
   } catch {
     return [];
   }

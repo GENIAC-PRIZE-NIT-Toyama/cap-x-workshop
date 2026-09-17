@@ -9,6 +9,13 @@ export PYROKI_SERVICE_URL=http://127.0.0.1:8116
 export SAM2_SERVICE_URL=http://127.0.0.1:8113
 export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
 
+# workshop/backend's prompt-engineering mode (llm_client.py) — a local,
+# OpenAI-compatible vLLM server it talks to directly over the LAN. Only this
+# backend process ever calls it; never exposed via the Cloudflare Tunnel.
+export WORKSHOP_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export WORKSHOP_VLLM_MODEL=default
+# export WORKSHOP_VLLM_API_KEY=  # optional; vLLM ignores it by default
+
 # api_servers[] in env_configs YAML no longer carry host/port; the
 # *_SERVICE_URL vars above are the single source of truth for where each
 # perception/motion server lives. By default, launch.py errors out if a

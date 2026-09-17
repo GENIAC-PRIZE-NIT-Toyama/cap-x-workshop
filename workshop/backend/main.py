@@ -8,6 +8,17 @@ The backend itself doesn't need capx or the Robosuite venv (see
 workshop/README.md's Layout section) — only the sandbox worker image does.
 Perception API access is via the fixed `perception-proxy-*` containers (see
 session_manager.py's module docstring), not host env vars.
+
+Prompt-engineering mode (see llm_client.py) calls a local, OpenAI-compatible
+vLLM server directly from this process over the LAN — set these before
+starting the backend if it's not at the default address:
+
+    WORKSHOP_VLLM_BASE_URL  (default: http://127.0.0.1:8000/v1)
+    WORKSHOP_VLLM_MODEL     (default: "default" — vLLM's served model name)
+    WORKSHOP_VLLM_API_KEY   (optional; vLLM ignores it by default)
+
+vLLM itself is never exposed beyond the LAN — only this backend process
+talks to it.
 """
 
 from __future__ import annotations

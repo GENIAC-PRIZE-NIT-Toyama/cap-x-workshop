@@ -1,18 +1,55 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { closeSession, createSession, fetchReplayUrl, resetSession, runCell, streamUrl } from "./api";
+import {
+  type ChatMessage,
+  closeSession,
+  createSession,
+  fetchReplayUrl,
+  resetSession,
+  runCell,
+  streamGenerate,
+  streamUrl,
+} from "./api";
 import TaskSelect from "./components/TaskSelect";
 import CameraView from "./components/CameraView";
 import Cell, { type CellState } from "./components/Cell";
 import PerceptionPanel from "./components/PerceptionPanel";
 import Toolbar from "./components/Toolbar";
 import ApiDocsModal from "./components/ApiDocsModal";
-import { newNotebookId, saveNotebook, type Notebook } from "./notebooks";
+import PromptExperimentPanel, {
+  newExperimentUiState,
+  type ExperimentUiState,
+  type TurnRunState,
+} from "./components/PromptExperimentPanel";
+import {
+  newNotebookId,
+  saveNotebook,
+  type GenerationSettings,
+  type Notebook,
+  type NotebookMode,
+  type PromptExperiment,
+  type PromptTurn,
+} from "./notebooks";
 import type { PerceptionStep } from "./types";
 
 let cellCounter = 0;
 function newCell(code = ""): CellState {
   cellCounter += 1;
   return { id: `cell-${cellCounter}`, code, running: false, result: null, error: null };
+}
+
+const DEFAULT_SETTINGS: GenerationSettings = { temperature: 0.7 };
+
+let experimentCounter = 0;
+function newTurn(userText = "", settings: GenerationSettings = DEFAULT_SETTINGS): PromptTurn {
+  return { userText, settings, llmRawResponse: "", extractedCode: "" };
+}
+// New experiments start with a blank prompt on purpose — participants build
+// it themselves from scratch (that's the point of the exercise). The task
+// instruction and API docs are still one click away (the task-prompt banner
+// and the ApiDocsModal), just not auto-inserted into the editable text.
+function newExperiment(initialUserText = ""): PromptExperiment {
+  experimentCounter += 1;
+  return { id: `exp-${experimentCounter}`, turns: [newTurn(initialUserText)] };
 }
 
 interface SessionInfo {
@@ -43,7 +80,10 @@ export default function App() {
   }, []);
 
   const [frames, setFrames] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState<NotebookMode>("manual");
   const [cells, setCells] = useState<CellState[]>([newCell()]);
+  const [experiments, setExperiments] = useState<PromptExperiment[]>([]);
+  const [expUi, setExpUi] = useState<Record<string, ExperimentUiState>>({});
   const [perceptionSteps, setPerceptionSteps] = useState<PerceptionStep[]>([]);
   const [resetting, setResetting] = useState(false);
   const [savingReplay, setSavingReplay] = useState(false);
@@ -80,7 +120,7 @@ export default function App() {
     return () => ws.close();
   }, [session?.sessionId]);
 
-  const handleStartNew = useCallback(async (taskId: string, name: string) => {
+  const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode) => {
     setStarting(true);
     setStartError(null);
     try {
@@ -92,14 +132,34 @@ export default function App() {
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
-      setCells([newCell()]);
+      setMode(notebookMode);
       setPerceptionSteps([]);
       activeRunFramesRef.current = [];
       setReplayFrames([]);
       const id = newNotebookId();
       setNotebookId(id);
       setNotebookName(name);
-      saveNotebook({ id, name, taskId, cells: [""], updatedAt: new Date().toISOString() });
+
+      if (notebookMode === "prompt") {
+        const exp = newExperiment();
+        setCells([newCell()]);
+        setExperiments([exp]);
+        setExpUi({ [exp.id]: newExperimentUiState() });
+        saveNotebook({
+          id,
+          name,
+          taskId,
+          mode: "prompt",
+          cells: [],
+          experiments: [exp],
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        setCells([newCell()]);
+        setExperiments([]);
+        setExpUi({});
+        saveNotebook({ id, name, taskId, mode: "manual", cells: [""], updatedAt: new Date().toISOString() });
+      }
     } catch (err) {
       setStartError(String(err));
     } finally {
@@ -119,12 +179,26 @@ export default function App() {
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
-      setCells(notebook.cells.length > 0 ? notebook.cells.map((code) => newCell(code)) : [newCell()]);
+      setMode(notebook.mode);
       setPerceptionSteps([]);
       activeRunFramesRef.current = [];
       setReplayFrames([]);
       setNotebookId(notebook.id);
       setNotebookName(notebook.name);
+
+      if (notebook.mode === "prompt") {
+        const exps =
+          notebook.experiments && notebook.experiments.length > 0
+            ? notebook.experiments
+            : [newExperiment()];
+        setExperiments(exps);
+        setExpUi(Object.fromEntries(exps.map((e) => [e.id, newExperimentUiState()])));
+        setCells([newCell()]);
+      } else {
+        setCells(notebook.cells.length > 0 ? notebook.cells.map((code) => newCell(code)) : [newCell()]);
+        setExperiments([]);
+        setExpUi({});
+      }
     } catch (err) {
       setStartError(String(err));
     } finally {
@@ -132,8 +206,11 @@ export default function App() {
     }
   }, []);
 
-  // Auto-save the notebook's code (not results) to the browser as it's
-  // edited, debounced so typing doesn't hit localStorage on every keystroke.
+  // Auto-save the notebook to the browser as it's edited, debounced so
+  // typing doesn't hit localStorage on every keystroke. Manual-mode
+  // notebooks persist code only (unchanged); prompt-mode notebooks persist
+  // prompts/LLM responses/code/stdout-stderr per notebooks.ts's Notebook
+  // shape — never frames/video/perception_steps.
   useEffect(() => {
     if (!notebookId || !session) return;
     const timeout = setTimeout(() => {
@@ -141,12 +218,14 @@ export default function App() {
         id: notebookId,
         name: notebookName,
         taskId: session.taskId,
-        cells: cells.map((c) => c.code),
+        mode,
+        cells: mode === "manual" ? cells.map((c) => c.code) : [],
+        experiments: mode === "prompt" ? experiments : undefined,
         updatedAt: new Date().toISOString(),
       });
     }, 500);
     return () => clearTimeout(timeout);
-  }, [cells, notebookId, notebookName, session]);
+  }, [cells, experiments, mode, notebookId, notebookName, session]);
 
   const updateCell = useCallback((id: string, patch: Partial<CellState>) => {
     setCells((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -253,6 +332,156 @@ export default function App() {
     [cells, handleReset, handleRunCell],
   );
 
+  // ------------------------------------------------------------------
+  // Prompt-engineering mode: experiments (1 prompt + 1 generated code
+  // block per trial, with optional manual Self-Refine turns). Reuses the
+  // same /cells/run and /reset endpoints as manual mode's Cell — a
+  // generated code block is executed exactly like a hand-written one, just
+  // always via a fresh reset (never plain "Run") since experiments are
+  // independent of each other and of prior turns' side effects.
+  // ------------------------------------------------------------------
+
+  const updateExperiment = useCallback((expId: string, updater: (exp: PromptExperiment) => PromptExperiment) => {
+    setExperiments((prev) => prev.map((e) => (e.id === expId ? updater(e) : e)));
+  }, []);
+
+  const updateTurn = useCallback(
+    (expId: string, turnIndex: number, patch: Partial<PromptTurn>) => {
+      updateExperiment(expId, (exp) => ({
+        ...exp,
+        turns: exp.turns.map((t, i) => (i === turnIndex ? { ...t, ...patch } : t)),
+      }));
+    },
+    [updateExperiment],
+  );
+
+  const updateExpUi = useCallback((expId: string, patch: Partial<ExperimentUiState>) => {
+    setExpUi((prev) => ({ ...prev, [expId]: { ...(prev[expId] ?? newExperimentUiState()), ...patch } }));
+  }, []);
+
+  const updateTurnRunState = useCallback((expId: string, turnIndex: number, patch: Partial<TurnRunState>) => {
+    setExpUi((prev) => {
+      const cur = prev[expId] ?? newExperimentUiState();
+      const curRun: TurnRunState = cur.runStates[turnIndex] ?? { running: false, result: null, error: null };
+      return { ...prev, [expId]: { ...cur, runStates: { ...cur.runStates, [turnIndex]: { ...curRun, ...patch } } } };
+    });
+  }, []);
+
+  const handleAddExperiment = useCallback(() => {
+    if (!session) return;
+    const exp = newExperiment();
+    setExperiments((prev) => [...prev, exp]);
+    setExpUi((prev) => ({ ...prev, [exp.id]: newExperimentUiState() }));
+  }, [session]);
+
+  const handleDeleteExperiment = useCallback((expId: string) => {
+    setExperiments((prev) => (prev.length > 1 ? prev.filter((e) => e.id !== expId) : prev));
+    setExpUi((prev) => {
+      const next = { ...prev };
+      delete next[expId];
+      return next;
+    });
+  }, []);
+
+  const handleGenerate = useCallback(
+    async (expId: string) => {
+      if (!session) return;
+      const exp = experiments.find((e) => e.id === expId);
+      if (!exp) return;
+      const turnIndex = exp.turns.length - 1;
+
+      // Full conversation so far: each earlier turn's prompt + the model's
+      // response to it, then this turn's (freshly edited) prompt — this is
+      // what makes Self-Refine "see" everything tried before it.
+      const messages: ChatMessage[] = [];
+      for (let i = 0; i <= turnIndex; i++) {
+        messages.push({ role: "user", content: exp.turns[i].userText });
+        if (i < turnIndex) {
+          messages.push({ role: "assistant", content: exp.turns[i].llmRawResponse });
+        }
+      }
+      const settings = exp.turns[turnIndex].settings;
+
+      updateExpUi(expId, { generating: true, streamingText: "", genError: null });
+      try {
+        const { fullText, code } = await streamGenerate(session.sessionId, messages, settings, (delta) => {
+          setExpUi((prev) => {
+            const cur = prev[expId] ?? newExperimentUiState();
+            return { ...prev, [expId]: { ...cur, streamingText: cur.streamingText + delta } };
+          });
+        });
+        updateTurn(expId, turnIndex, { llmRawResponse: fullText, extractedCode: code });
+        updateExpUi(expId, { generating: false });
+      } catch (err) {
+        updateExpUi(expId, { generating: false, genError: String(err) });
+      }
+    },
+    [session, experiments, updateExpUi, updateTurn],
+  );
+
+  const handleResetAndRunExperiment = useCallback(
+    async (expId: string) => {
+      if (!session) return;
+      const exp = experiments.find((e) => e.id === expId);
+      if (!exp) return;
+      const turnIndex = exp.turns.length - 1;
+      const turn = exp.turns[turnIndex];
+      const cellId = `${expId}-turn-${turnIndex}`;
+
+      updateTurnRunState(expId, turnIndex, { running: true, error: null });
+      isCellRunningRef.current = true;
+      await handleReset();
+      try {
+        const result = await runCell(session.sessionId, cellId, turn.extractedCode);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        isCellRunningRef.current = false;
+        updateTurnRunState(expId, turnIndex, { running: false, result });
+        updateTurn(expId, turnIndex, { lastRun: { stdout: result.stdout, stderr: result.stderr } });
+
+        if (result.perception_steps.length > 0) {
+          setPerceptionSteps((prev) => [...prev, ...result.perception_steps]);
+        }
+        setFrames(result.frames);
+        if (result.frames && Object.keys(result.frames).length > 0) {
+          const cam = Object.keys(result.frames)[0];
+          const lastImg = result.frames[cam];
+          activeRunFramesRef.current.push({ camera: cam, image: lastImg });
+        }
+        if (activeRunFramesRef.current.length > 0) {
+          setReplayFrames([...activeRunFramesRef.current]);
+          setActiveCamera("replay");
+        }
+      } catch (err) {
+        isCellRunningRef.current = false;
+        updateTurnRunState(expId, turnIndex, { running: false, error: String(err) });
+      }
+    },
+    [session, experiments, handleReset, updateTurnRunState, updateTurn],
+  );
+
+  const handleAddRefineTurn = useCallback((expId: string) => {
+    setExperiments((prev) =>
+      prev.map((exp) => {
+        if (exp.id !== expId) return exp;
+        const lastTurn = exp.turns[exp.turns.length - 1];
+        const stdout = lastTurn.lastRun?.stdout ?? "";
+        const stderr = lastTurn.lastRun?.stderr ?? "";
+        const seeded = [
+          "直前に実行したコードの標準出力・標準エラー出力は以下の通りです。これを踏まえてコードを修正してください。",
+          "",
+          "--- stdout ---",
+          stdout || "(なし)",
+          "",
+          "--- stderr ---",
+          stderr || "(なし)",
+          "",
+          "(ここに追加の指示があれば書いてください)",
+        ].join("\n");
+        return { ...exp, turns: [...exp.turns, newTurn(seeded, { ...lastTurn.settings })] };
+      }),
+    );
+  }, []);
+
   const handleSaveReplay = useCallback(async () => {
     if (!session) return;
     // Open the tab synchronously, inside the click's user-gesture chain —
@@ -285,7 +514,10 @@ export default function App() {
     setReplayFrames([]);
     setSession(null);
     setFrames({});
+    setMode("manual");
     setCells([newCell()]);
+    setExperiments([]);
+    setExpUi({});
     setPerceptionSteps([]);
     setNotebookId(null);
     setNotebookName("");
@@ -323,43 +555,76 @@ export default function App() {
           <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />
         </div>
         <div className="pane pane-editor">
-          <div className="editor-header">
-            <div>
-              <button className="run-btn" style={{marginRight: "8px"}} onClick={handleRunAll} disabled={resetting}>
-                ▶ Run All
-              </button>
-              <button
-                className="reset-run-btn"
-                onClick={handleResetAndRunAll}
-                disabled={resetting}
-              >
-                {resetting ? "リセット中..." : "環境リセット & Run All"}
-              </button>
-            </div>
-            <span className="editor-title">セル数: {cells.length}</span>
-          </div>
-          <div className="cell-divider">
-            <button onClick={() => handleAddCell(0)}>+ コード</button>
-          </div>
-          {cells.map((cell, i) => (
-            <div key={cell.id} className="cell-wrapper">
-              <Cell
-                index={i}
-                cell={cell}
-                theme={theme}
-                onChange={(code) => updateCell(cell.id, { code })}
-                onRun={() => handleRunCell(cell.id)}
-                onResetAndRun={() => handleResetAndRunCell(cell.id)}
-                onResetAndRunUpTo={() => handleResetAndRunUpTo(i)}
-                onDelete={() => handleDeleteCell(cell.id)}
-                canDelete={cells.length > 1}
-                resetting={resetting}
-              />
-              <div className="cell-divider">
-                <button onClick={() => handleAddCell(i + 1)}>+ コード</button>
+          {mode === "manual" ? (
+            <>
+              <div className="editor-header">
+                <div>
+                  <button className="run-btn" style={{marginRight: "8px"}} onClick={handleRunAll} disabled={resetting}>
+                    ▶ Run All
+                  </button>
+                  <button
+                    className="reset-run-btn"
+                    onClick={handleResetAndRunAll}
+                    disabled={resetting}
+                  >
+                    {resetting ? "リセット中..." : "環境リセット & Run All"}
+                  </button>
+                </div>
+                <span className="editor-title">セル数: {cells.length}</span>
               </div>
-            </div>
-          ))}
+              <div className="cell-divider">
+                <button onClick={() => handleAddCell(0)}>+ コード</button>
+              </div>
+              {cells.map((cell, i) => (
+                <div key={cell.id} className="cell-wrapper">
+                  <Cell
+                    index={i}
+                    cell={cell}
+                    theme={theme}
+                    onChange={(code) => updateCell(cell.id, { code })}
+                    onRun={() => handleRunCell(cell.id)}
+                    onResetAndRun={() => handleResetAndRunCell(cell.id)}
+                    onResetAndRunUpTo={() => handleResetAndRunUpTo(i)}
+                    onDelete={() => handleDeleteCell(cell.id)}
+                    canDelete={cells.length > 1}
+                    resetting={resetting}
+                  />
+                  <div className="cell-divider">
+                    <button onClick={() => handleAddCell(i + 1)}>+ コード</button>
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <>
+              <div className="editor-header">
+                <span className="editor-title">プロンプトエンジニアリングモード</span>
+                <span className="editor-title">実験数: {experiments.length}</span>
+              </div>
+              {experiments.map((exp, expIndex) => (
+                <div key={exp.id} className="experiment-wrapper">
+                  <PromptExperimentPanel
+                    index={expIndex}
+                    experiment={exp}
+                    ui={expUi[exp.id] ?? newExperimentUiState()}
+                    theme={theme}
+                    resetting={resetting}
+                    onUpdateTurnText={(turnIndex, text) => updateTurn(exp.id, turnIndex, { userText: text })}
+                    onUpdateTurnSettings={(turnIndex, settings) => updateTurn(exp.id, turnIndex, { settings })}
+                    onUpdateTurnCode={(turnIndex, code) => updateTurn(exp.id, turnIndex, { extractedCode: code })}
+                    onGenerate={() => handleGenerate(exp.id)}
+                    onResetAndRun={() => handleResetAndRunExperiment(exp.id)}
+                    onAddRefineTurn={() => handleAddRefineTurn(exp.id)}
+                    onDeleteExperiment={() => handleDeleteExperiment(exp.id)}
+                    canDelete={experiments.length > 1}
+                  />
+                </div>
+              ))}
+              <div className="experiment-divider">
+                <button onClick={handleAddExperiment}>+ 実験を追加</button>
+              </div>
+            </>
+          )}
         </div>
         <div className="pane pane-perception">
           <PerceptionPanel steps={perceptionSteps} />
