@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { listTasks } from "../api";
-import { listNotebooks, deleteNotebook, type Notebook } from "../notebooks";
+import { listNotebooks, deleteNotebook, type Notebook, type NotebookMode } from "../notebooks";
 import type { TaskSummary } from "../types";
 
 interface Props {
-  onStartNew: (taskId: string, name: string) => void;
+  onStartNew: (taskId: string, name: string, mode: NotebookMode) => void;
   onOpenNotebook: (notebook: Notebook) => void;
   busy: boolean;
 }
@@ -13,14 +13,16 @@ function TaskGrid({
   tasks,
   busy,
   name,
+  mode,
   featured,
   onStartNew,
 }: {
   tasks: TaskSummary[];
   busy: boolean;
   name: string;
+  mode: NotebookMode;
   featured?: boolean;
-  onStartNew: (taskId: string, name: string) => void;
+  onStartNew: (taskId: string, name: string, mode: NotebookMode) => void;
 }) {
   return (
     <div className="task-grid">
@@ -29,7 +31,7 @@ function TaskGrid({
           key={task.task_id}
           className={featured ? "task-card featured" : "task-card"}
           disabled={busy}
-          onClick={() => onStartNew(task.task_id, name.trim() || task.name)}
+          onClick={() => onStartNew(task.task_id, name.trim() || task.name, mode)}
         >
           <h2>{task.name}</h2>
           <p>{task.description}</p>
@@ -39,10 +41,17 @@ function TaskGrid({
   );
 }
 
+function notebookMeta(nb: Notebook, taskName: string): string {
+  const count = nb.mode === "prompt" ? `${nb.experiments?.length ?? 0}実験` : `${nb.cells.length}セル`;
+  const modeLabel = nb.mode === "prompt" ? "プロンプト" : "手動";
+  return `${taskName} ・ ${modeLabel} ・ ${new Date(nb.updatedAt).toLocaleString()} ・ ${count}`;
+}
+
 export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [mode, setMode] = useState<NotebookMode>("manual");
   const [notebooks, setNotebooks] = useState<Notebook[]>(() => listNotebooks());
 
   useEffect(() => {
@@ -75,10 +84,7 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
             <div key={nb.id} className="notebook-row">
               <div className="notebook-row-info">
                 <span className="notebook-row-name">{nb.name}</span>
-                <span className="notebook-row-meta">
-                  {taskName(nb.taskId)} ・ {new Date(nb.updatedAt).toLocaleString()} ・{" "}
-                  {nb.cells.length}セル
-                </span>
+                <span className="notebook-row-meta">{notebookMeta(nb, taskName(nb.taskId))}</span>
               </div>
               <div className="notebook-row-actions">
                 <button disabled={busy} onClick={() => onOpenNotebook(nb)}>
@@ -105,20 +111,43 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
         />
       </div>
 
+      <div className="mode-select" role="radiogroup" aria-label="ノートブックモード">
+        <button
+          type="button"
+          className={mode === "manual" ? "mode-btn active" : "mode-btn"}
+          aria-pressed={mode === "manual"}
+          disabled={busy}
+          onClick={() => setMode("manual")}
+        >
+          手動モード
+          <small>Perception/Control Primitiveを自分で組み合わせる</small>
+        </button>
+        <button
+          type="button"
+          className={mode === "prompt" ? "mode-btn active" : "mode-btn"}
+          aria-pressed={mode === "prompt"}
+          disabled={busy}
+          onClick={() => setMode("prompt")}
+        >
+          プロンプトモード
+          <small>LLMにプロンプトを与えてコードを生成させる</small>
+        </button>
+      </div>
+
       {error && <p className="error">タスク一覧の取得に失敗しました: {error}</p>}
       {!tasks && !error && <p>読み込み中...</p>}
 
       {featuredTasks.length > 0 && (
         <>
           <h2 className="task-section-title">おすすめタスク</h2>
-          <TaskGrid tasks={featuredTasks} busy={busy} name={name} featured onStartNew={onStartNew} />
+          <TaskGrid tasks={featuredTasks} busy={busy} name={name} mode={mode} featured onStartNew={onStartNew} />
         </>
       )}
 
       {otherTasks.length > 0 && (
         <>
           <h2 className="task-section-title">その他のタスク</h2>
-          <TaskGrid tasks={otherTasks} busy={busy} name={name} onStartNew={onStartNew} />
+          <TaskGrid tasks={otherTasks} busy={busy} name={name} mode={mode} onStartNew={onStartNew} />
         </>
       )}
     </div>

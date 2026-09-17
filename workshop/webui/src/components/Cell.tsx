@@ -18,12 +18,16 @@ interface Props {
   cell: CellState;
   theme: "light" | "dark";
   onChange: (code: string) => void;
-  onRun: () => void;
   onResetAndRun: () => void;
-  onResetAndRunUpTo: () => void;
-  onDelete: () => void;
-  canDelete: boolean;
+  // Manual-mode-only extras. Omit all three to render just the editor +
+  // "リセット&Run" button (used by the prompt-engineering mode, where every
+  // experiment always runs standalone against a fresh reset).
+  onRun?: () => void;
+  onResetAndRunUpTo?: () => void;
+  onDelete?: () => void;
+  canDelete?: boolean;
   resetting?: boolean;
+  readOnly?: boolean;
 }
 
 export default function Cell({
@@ -37,6 +41,7 @@ export default function Cell({
   onDelete,
   canDelete,
   resetting,
+  readOnly,
 }: Props) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [height, setHeight] = useState(MIN_EDITOR_HEIGHT);
@@ -62,28 +67,34 @@ export default function Cell({
     <div className="cell">
       <div className="cell-header">
         <span className="cell-index">[{index + 1}]</span>
-        <button className="run-btn" onClick={onRun} disabled={cell.running || resetting}>
-          {cell.running ? "実行中..." : "▶ Run"}
-        </button>
+        {onRun && (
+          <button className="run-btn" onClick={onRun} disabled={cell.running || resetting}>
+            {cell.running ? "実行中..." : "▶ Run"}
+          </button>
+        )}
         <button
           className="reset-run-btn"
           onClick={onResetAndRun}
           disabled={cell.running || resetting}
           title="環境を初期化して、このセルのみを実行"
         >
-          {resetting ? "リセット中..." : "リセット&Run"}
+          {resetting ? "リセット中..." : cell.running ? "実行中..." : "リセット&Run"}
         </button>
-        <button
-          className="reset-run-btn"
-          onClick={onResetAndRunUpTo}
-          disabled={cell.running || resetting}
-          title="環境を初期化して、先頭からこのセルまで順番に実行"
-        >
-          {resetting ? "リセット中..." : "リセット&ここまでRun"}
-        </button>
-        <button className="delete-btn" onClick={onDelete} disabled={!canDelete || cell.running}>
-          削除
-        </button>
+        {onResetAndRunUpTo && (
+          <button
+            className="reset-run-btn"
+            onClick={onResetAndRunUpTo}
+            disabled={cell.running || resetting}
+            title="環境を初期化して、先頭からこのセルまで順番に実行"
+          >
+            {resetting ? "リセット中..." : "リセット&ここまでRun"}
+          </button>
+        )}
+        {onDelete && (
+          <button className="delete-btn" onClick={onDelete} disabled={!canDelete || cell.running}>
+            削除
+          </button>
+        )}
       </div>
       <div style={{ padding: "12px 0", backgroundColor: theme === "dark" ? "#1e1e1e" : "#fffffe" }}>
         <Editor
@@ -94,6 +105,7 @@ export default function Cell({
           onMount={handleMount}
           onChange={(value) => onChange(value ?? "")}
           options={{
+            readOnly: readOnly ?? false,
             minimap: { enabled: false },
             fontSize: 13,
             scrollBeyondLastLine: false,

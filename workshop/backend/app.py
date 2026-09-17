@@ -10,19 +10,23 @@ module's docstring, `workshop/backend/docker/Dockerfile`, and
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import threading
 from pathlib import Path
 
 import requests
 import websockets
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from websockets.asyncio.client import connect as ws_connect
 
+from workshop.backend.code_extract import extract_code
 from workshop.backend.config import REPO_ROOT, TASKS, get_task, resolve_config_path
+from workshop.backend.llm_client import stream_chat_completion
 from workshop.backend.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,16 @@ class CreateSessionRequest(BaseModel):
 class RunCellRequest(BaseModel):
     code: str
     cell_id: str
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class GenerateRequest(BaseModel):
+    messages: list[ChatMessage]
+    settings: dict[str, float] = {}
 
 
 def _require_session(app: FastAPI, session_id: str) -> SessionManager:
@@ -192,6 +206,60 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             # back as a normal {"ok": False, ...} 200 response instead).
             detail = exc.response.text if exc.response is not None else str(exc)
             raise HTTPException(status_code=500, detail=detail)
+
+    @app.post("/api/sessions/{session_id}/experiments/generate")
+    async def generate_experiment(session_id: str, request: GenerateRequest) -> StreamingResponse:
+        """Streams an LLM chat completion as Server-Sent Events.
+
+        Pure LLM proxy: this never touches the sandbox container or Docker.
+        `_require_session` just guards against generating for a session that
+        was already closed. The frontend sends the full message history
+        itself each call (this endpoint holds no conversation state), and
+        the extracted code is executed afterwards via the existing, unchanged
+        `/cells/run` endpoint — a generated code block is treated exactly
+        like a participant-typed one.
+        """
+        _require_session(app, session_id)
+
+        messages = [m.model_dump() for m in request.messages]
+        settings = request.settings
+
+        async def event_stream():
+            loop = asyncio.get_event_loop()
+            queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue()
+
+            def _produce() -> None:
+                try:
+                    for delta in stream_chat_completion(messages, settings):
+                        loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
+                except Exception as exc:  # noqa: BLE001 - surfaced to the client as an error event
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            # A background thread, not asyncio.to_thread on the whole
+            # generator: the sync `openai` client blocks per network chunk,
+            # so iterating it needs to happen off the event loop while still
+            # letting each delta reach the queue (and the client) as it
+            # arrives, not only after the full response is done.
+            threading.Thread(target=_produce, daemon=True).start()
+
+            full_text = ""
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                kind, text = item
+                if kind == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'text': text})}\n\n"
+                    return
+                full_text += text
+                yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+
+            code = extract_code(full_text)
+            yield f"data: {json.dumps({'type': 'done', 'full_text': full_text, 'code': code})}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str) -> dict:
