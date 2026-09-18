@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { RUN_SHORTCUT_LABEL } from "../shortcut";
 import type { CellResult } from "../types";
@@ -53,11 +53,17 @@ export default function Cell({
   const runBlocked = cell.running || resetting || (disableWhenEmpty && cell.code.trim() === "");
 
   // ⌘/Ctrl+Enter runs the cell: "▶ Run" in manual mode, "リセット&Run" in
-  // prompt mode (which has no plain Run). Monaco registers the command once
+  // prompt mode (which has no plain Run). Monaco registers the action once
   // at mount, so it reads the latest handler/state through a ref rather
   // than closing over the first render's props.
   const shortcutRef = useRef({ blocked: runBlocked, run: onRun ?? onResetAndRun });
   shortcutRef.current = { blocked: runBlocked, run: onRun ?? onResetAndRun };
+  // addAction (not addCommand): the keybinding is scoped to this editor
+  // instance, so with several cells the focused one runs — addCommand
+  // registers globally and the last-mounted cell would win. Disposed on
+  // unmount so a removed cell doesn't keep its binding alive.
+  const shortcutActionRef = useRef<{ dispose(): void } | null>(null);
+  useEffect(() => () => shortcutActionRef.current?.dispose(), []);
 
   // Grow the editor with the number of lines instead of a fixed height —
   // getContentHeight() already accounts for line count/wrapping, so this is
@@ -74,11 +80,14 @@ export default function Cell({
     editorRef.current = editor;
     updateHeight();
     editor.onDidContentSizeChange(updateHeight);
-    const runFromKeyboard = () => {
-      if (!shortcutRef.current.blocked) shortcutRef.current.run();
-    };
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runFromKeyboard);
-    editor.addCommand(monaco.KeyMod.WinCtrl | monaco.KeyCode.Enter, runFromKeyboard);
+    shortcutActionRef.current = editor.addAction({
+      id: "capx.runCell",
+      label: "Run cell",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, monaco.KeyMod.WinCtrl | monaco.KeyCode.Enter],
+      run: () => {
+        if (!shortcutRef.current.blocked) shortcutRef.current.run();
+      },
+    });
   };
 
   return (
