@@ -6,7 +6,7 @@
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { renderFrame } from "./png.js";
-import { API_DOCS, GENERATE_RESPONSE, PRIMARY_CAMERA, TASKS, TASK_PROMPTS } from "./fixtures.js";
+import { API_DOCS, GENERATE_RESPONSE, PRIMARY_CAMERA, TASKS, TASK_PROMPTS, TASK_PROMPTS_JA } from "./fixtures.js";
 
 const HOST = "127.0.0.1";
 const PORT = 8200;
@@ -57,7 +57,12 @@ function framesFor(session) {
 }
 
 function resetPayload(session) {
-  return { frames: framesFor(session), task_prompt: TASK_PROMPTS[session.taskId], api_docs: API_DOCS };
+  return {
+    frames: framesFor(session),
+    task_prompt: TASK_PROMPTS[session.taskId],
+    task_prompt_ja: TASK_PROMPTS_JA[session.taskId] ?? null,
+    api_docs: API_DOCS,
+  };
 }
 
 function send(req, res, status, body, contentType = "application/json") {

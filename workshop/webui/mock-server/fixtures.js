@@ -167,6 +167,94 @@ The functions (APIs) below are already imported to the environment. If you want 
 `,
 };
 
+// Hand-copied from config.py's prompt_ja, prefixed like the rest.
+export const TASK_PROMPTS_JA = {
+  cube_lifting:
+    MOCK +
+    `あなたは以下のAPIでFranka Emikaロボットを制御します。
+目標: 赤いキューブを掴んで持ち上げてください。
+思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。
+以下の関数（API）は環境にすでにimportされています。numpyを使う場合は明示的にimportしてください。`,
+  cube_restack:
+    MOCK +
+    `あなたは以下のAPIでFranka Emikaロボットを制御します。
+目標: 赤いキューブを緑のキューブの上にそっと置き、その後グリッパーを開いてください。高い位置から落としてはいけません。
+キューブの寸法（extent）を使って、置くべき正確な高さを計算してください。
+思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。
+以下の関数（API）は環境にすでにimportされています。numpy、scipy、torchなどを使う場合は明示的にimportしてください。`,
+  cube_stack:
+    MOCK +
+    `あなたは以下のAPIでFranka Emikaロボットを制御します。
+目標: 赤いキューブを掴み、緑のキューブの上にそっと積んでから離してください。
+
+重要なルール:
+- get_object_pose(..., return_bbox_extent=True) が返す extent は辺の「全長」です。半分の高さには extent[2]/2 を使ってください。
+- 置くときの姿勢には sample_grasp_pose が返した把持クォータニオンを使い回してください。get_object_pose のクォータニオンは姿勢の情報として信頼できないので使わないでください。
+- 物体を掴む・置くために近づくときは、必ず z_approach=0.1 を指定してください。
+- 掴んだ後は、横方向に移動する前にキューブを安全な高さ（Z方向に少なくとも +0.2m）まで持ち上げてください。
+- 積む高さの式: place_z = green_center_z + green_extent[2]/2 + red_extent[2]/2
+- 高い位置から落としてはいけません。制御された降下のために必ず z_approach を使って近づいてください。
+
+実行可能なPythonコードのみを書いてください（コードフェンスは不要）。必要ならnumpyをimportしてください。`,
+  nut_assembly:
+    MOCK +
+    `あなたは以下のAPIでFranka Emikaロボットを制御します。
+目標: \`brown square nut\` を掴み、\`brown square block\` に挿入してください。
+ナットは取っ手（handle）の部分を掴みます。取っ手をうまく掴むには、言語クエリ \`extruded handle of the brown square nut\` を試してください。
+brown square nut と、その extruded handle は同じ剛体の一部です。
+'extruded handle of the brown square nut' に対する把持姿勢クエリは、取っ手の領域にあるエンドエフェクタ姿勢をワールド座標系で返します。
+'white hollow center of the brown square nut' で得られるナット中心の姿勢と、'extruded handle of the brown square nut' で得られる取っ手の把持姿勢の間には固定の剛体変換があり、ナットをペグに挿入するときはこれを正しく適用する必要があります。
+思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。
+以下の関数（API）は環境にすでにimportされています。
+numpyや、空間変換のためのscipyを使う場合は明示的にimportしてください。`,
+  spill_wipe:
+    MOCK +
+    `あなたは以下のAPIでFranka Emikaロボットを制御します。
+目標: 'brown spill'（茶色いこぼれ跡）を拭き取ってください。
+グリッパー（エンドエフェクタ）にはすでにスポンジが取り付けられています。
+テーブル面の高さはちょうど z = 0.0 m で、拭き取りはこの高さで行ってください（追加のオフセットは不要です）。
+こぼれ跡の寸法（extent）を使って、拭き取り動作の x・y の最小/最大範囲を決めてください。
+逆運動学の解の差が大きいと最適な軌道にならない場合があるため、大きな拭き取り動作は避けてください。
+スポンジはすでにエンドエフェクタに付いているので、拭き取りには下向きの姿勢（wxyz で 0,0,1,0）を使ってください。
+思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。
+以下の関数（API）は環境にすでにimportされています。numpyを使う場合は明示的にimportしてください。`,
+  two_arm_handover:
+    MOCK +
+    `あなたは以下のAPIで、2本のアームからなるFranka Emikaロボットシステムを制御します。
+目標: アーム0がハンマーを掴んで持ち上げ、アーム1に手渡します。アーム1はハンマーの柄（ヘッドではなく）を掴みます。受け渡しの間、ハンマーのz値が0.15〜0.20の範囲にあれば成功とみなされます。
+
+座標系:
+- すべての姿勢関数は、robot0 のベース座標系で位置を受け取ります（get_object_pose / goto_pose_arm* が返す・受け取る座標系と同じです）。
+- テーブル面は必ずしも z=0 ではありません。
+- 座標軸の規約:
+  - Z軸: 上が正、下が負
+  - X軸: 右が正、左が負
+  - Y軸: 前が正、後ろが負
+
+環境の詳細:
+- アーム0（左）とアーム1（右）はテーブルを挟んで反対側に配置されています。
+- ハンマーの柄の長さは 0.15m〜0.25m の範囲でランダムです。
+- ハンマーは最初、テーブルの上にY軸に沿って平置きされており、柄が +Y 側、ヘッドが -Y 側を向いています。
+
+重要な情報:
+- 受け渡しは、両グリッパーの初期位置の中間点付近で行う必要があります。アーム1へ衝突なく渡せる最適なハンマーの向きを考えてください。
+- テーブルは2本のアームの間の領域全体には広がっていません。ハンマーが中央の隙間に落ちると床まで落下し、タスクは復旧不能になります。
+- 衝突を避けてください。動きを回転成分と並進成分に分解し、段階的に動かす必要があります。衝突を安全に避けられる最適なウェイポイントの順序を考えてください。
+- アームのリンクには体積があり、中間の動きは衝突チェックされません。グリッパー間には最低 8cm の余裕を保ってください。
+
+参考クォータニオン:
+- アーム0 グリッパー下向き・X軸方向に開く: [0, 0.707, 0.707, 0]
+- アーム0 グリッパー下向き・Y軸方向に開く: [0, 1, 0, 0]
+- アーム1 グリッパー下向き・Y軸方向に開く: [0, 0, 1, 0]
+
+各アームのグリッパーのおおよその初期位置（robot0 座標系）。試行ごとに数cm程度ずれることがあります:
+- アーム0: x = 0.44, y = 0.0
+- アーム1: x = 1.18, y = 0.0
+
+思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。
+以下の関数（API）は環境にすでにimportされています。numpyを使う場合は明示的にimportしてください。`,
+};
+
 // Same format ApiBase.combined_doc() produces (capx/integrations/base_api.py),
 // for the visual-tier functions in capx/integrations/franka/control.py.
 export const API_DOCS = `# ${MOCK.trim()} API docs — excerpt of the visual tier, hand-copied from capx/integrations/franka/control.py
