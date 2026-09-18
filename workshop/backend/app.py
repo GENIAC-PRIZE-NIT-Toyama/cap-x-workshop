@@ -135,6 +135,7 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             "task_id": task.task_id,
             "frames": result["frames"],
             "task_prompt": result.get("task_prompt"),
+            "task_prompt_ja": task.prompt_ja,
             "api_docs": result.get("api_docs", ""),
         }
 
@@ -264,7 +265,11 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
     @app.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str) -> dict:
         manager = _require_session(app, session_id)
-        return await manager.reset(session_id)
+        result = await manager.reset(session_id)
+        # task_prompt comes back from the worker (capx's English PROMPT); the
+        # Japanese rendering lives only in config.py, so add it here.
+        task = get_task(manager.get(session_id).task_id)
+        return {**result, "task_prompt_ja": task.prompt_ja}
 
     @app.post("/api/sessions/{session_id}/replay")
     async def save_replay(session_id: str) -> FileResponse:
