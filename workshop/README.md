@@ -78,6 +78,22 @@ npm install
 npm run dev  # http://localhost:5173
 ```
 
+### Frontend-only development (no Docker / GPU)
+
+To work on the WebUI on a machine that can't run the backend (e.g. macOS —
+the session containers need `--runtime nvidia`), run the mock backend on the
+same port instead. It answers every `/api` route with canned data, marks
+everything with a `[MOCK]` prefix, and never touches Docker or a robot. See
+[`WORKSHOP_WEBUI_LOCAL_DEV.md`](../WORKSHOP_WEBUI_LOCAL_DEV.md) for what it
+does and doesn't mimic.
+
+```bash
+cd workshop/webui
+npm install
+npm run mock  # terminal 1: mock backend on http://localhost:8200
+npm run dev   # terminal 2: http://localhost:5173
+```
+
 ## Production build (single origin, for the Cloudflare Tunnel)
 
 ```bash
