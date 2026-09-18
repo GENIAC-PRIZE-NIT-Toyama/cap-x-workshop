@@ -28,6 +28,9 @@ interface Props {
   canDelete?: boolean;
   resetting?: boolean;
   readOnly?: boolean;
+  // Disable the run buttons while the code is blank. Opt-in: manual mode
+  // lets empty cells run (Run All walks over them), prompt mode doesn't.
+  disableWhenEmpty?: boolean;
 }
 
 export default function Cell({
@@ -42,9 +45,11 @@ export default function Cell({
   canDelete,
   resetting,
   readOnly,
+  disableWhenEmpty,
 }: Props) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [height, setHeight] = useState(MIN_EDITOR_HEIGHT);
+  const runBlocked = cell.running || resetting || (disableWhenEmpty && cell.code.trim() === "");
 
   // Grow the editor with the number of lines instead of a fixed height —
   // getContentHeight() already accounts for line count/wrapping, so this is
@@ -68,14 +73,14 @@ export default function Cell({
       <div className="cell-header">
         <span className="cell-index">[{index + 1}]</span>
         {onRun && (
-          <button className="run-btn" onClick={onRun} disabled={cell.running || resetting}>
+          <button className="run-btn" onClick={onRun} disabled={runBlocked}>
             {cell.running ? "実行中..." : "▶ Run"}
           </button>
         )}
         <button
           className="reset-run-btn"
           onClick={onResetAndRun}
-          disabled={cell.running || resetting}
+          disabled={runBlocked}
           title="環境を初期化して、このセルのみを実行"
         >
           {resetting ? "リセット中..." : cell.running ? "実行中..." : "リセット&Run"}
