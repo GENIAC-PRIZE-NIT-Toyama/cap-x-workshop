@@ -110,6 +110,9 @@ export default function Cell({
             fontSize: 13,
             scrollBeyondLastLine: false,
             scrollbar: { alwaysConsumeMouseWheel: false },
+            // .cell clips overflow, which would cut off the suggestion
+            // widget (and its signature/doc flyout) on short cells.
+            fixedOverflowWidgets: true,
           }}
         />
       </div>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useMonaco } from "@monaco-editor/react";
+import { parseApiDocs } from "./apiDocs";
 import {
   type ChatMessage,
   closeSession,
@@ -15,6 +17,7 @@ import Cell, { type CellState } from "./components/Cell";
 import PerceptionPanel from "./components/PerceptionPanel";
 import Toolbar from "./components/Toolbar";
 import ApiDocsModal from "./components/ApiDocsModal";
+import TaskPromptBanner, { type PromptLang } from "./components/TaskPromptBanner";
 import PromptExperimentPanel, {
   newExperimentUiState,
   type ExperimentUiState,
@@ -56,6 +59,7 @@ interface SessionInfo {
   sessionId: string;
   taskId: string;
   taskPrompt: string | null;
+  taskPromptJa: string | null;
   apiDocs: string;
 }
 
@@ -78,6 +82,63 @@ export default function App() {
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
+
+  const [promptLang, setPromptLang] = useState<PromptLang>(
+    () => (localStorage.getItem("promptLang") === "en" ? "en" : "ja"),
+  );
+
+  useEffect(() => {
+    localStorage.setItem("promptLang", promptLang);
+  }, [promptLang]);
+
+  // Offer the session's API functions (parsed from api_docs) as completions
+  // in every code cell. Registered once per session at the language level,
+  // not per Cell, so the candidates aren't duplicated.
+  const monaco = useMonaco();
+  const apiDocs = session?.apiDocs;
+  useEffect(() => {
+    if (!monaco || apiDocs === undefined) return;
+    const functions = parseApiDocs(apiDocs);
+    const apiNames = new Set(functions.map((f) => f.name));
+    const disposable = monaco.languages.registerCompletionItemProvider("python", {
+      provideCompletionItems(model, position) {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const api = functions.map((f) => ({
+          label: f.name,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: f.name,
+          detail: f.signature,
+          documentation: f.doc,
+          range,
+        }));
+        // Monaco drops its built-in word-based suggestions as soon as any
+        // provider returns results, so re-create them here: every word in
+        // every python model (same as its "matchingDocuments" default),
+        // minus API names and the word being typed.
+        const words = new Set<string>();
+        for (const m of monaco.editor.getModels()) {
+          if (m.getLanguageId() !== "python") continue;
+          for (const w of m.getValue().match(/[A-Za-z_]\w*/g) ?? []) {
+            if (!apiNames.has(w) && w !== word.word) words.add(w);
+          }
+        }
+        const text = [...words].map((w) => ({
+          label: w,
+          kind: monaco.languages.CompletionItemKind.Text,
+          insertText: w,
+          range,
+        }));
+        return { suggestions: [...api, ...text] };
+      },
+    });
+    return () => disposable.dispose();
+  }, [monaco, apiDocs]);
 
   const [frames, setFrames] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<NotebookMode>("manual");
@@ -129,6 +190,7 @@ export default function App() {
         sessionId: res.session_id,
         taskId: res.task_id,
         taskPrompt: res.task_prompt,
+        taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
@@ -176,6 +238,7 @@ export default function App() {
         sessionId: res.session_id,
         taskId: res.task_id,
         taskPrompt: res.task_prompt,
+        taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
@@ -303,7 +366,9 @@ export default function App() {
       // (pre-reset) run result get cleared, not the notebook itself.
       setCells((prev) => prev.map((c) => ({ ...c, result: null, error: null })));
       setPerceptionSteps([]);
-      setSession((prev) => (prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt } : prev));
+      setSession((prev) =>
+        prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt, taskPromptJa: res.task_prompt_ja } : prev,
+      );
     } finally {
       setResetting(false);
     }
@@ -549,7 +614,14 @@ export default function App() {
         savingReplay={savingReplay}
       />
       <ApiDocsModal visible={docsVisible} docs={session.apiDocs} theme={theme} onClose={() => setDocsVisible(false)} />
-      {session.taskPrompt && <p className="task-prompt">{session.taskPrompt}</p>}
+      {session.taskPrompt && (
+        <TaskPromptBanner
+          prompt={session.taskPrompt}
+          promptJa={session.taskPromptJa}
+          lang={promptLang}
+          onChangeLang={setPromptLang}
+        />
+      )}
       <div className="main-panes">
         <div className="pane pane-camera">
           <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />

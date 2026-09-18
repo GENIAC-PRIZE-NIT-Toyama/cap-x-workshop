@@ -32,11 +32,13 @@ export interface CreateSessionResponse {
   task_id: string;
   frames: Record<string, string>;
   task_prompt: string | null;
+  task_prompt_ja: string | null;
   api_docs: string;
 }
 
 export interface ResetResponse {
   frames: Record<string, string>;
   task_prompt: string | null;
+  task_prompt_ja: string | null;
   api_docs: string;
 }
