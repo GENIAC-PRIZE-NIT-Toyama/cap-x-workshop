@@ -119,6 +119,27 @@ export default function PromptExperimentPanel({
     if (o && o.overhang > 0) o.pane.scrollTop += o.overhang;
   }, [ui.generating, ui.streamingText]);
 
+  // When a generation finishes, the output collapses and the extracted code
+  // appears below it — bring that code block into view, since the output
+  // the user was following just disappeared from under them. The Monaco
+  // cell mounts small and grows once it loads, so instead of aligning its
+  // (not yet final) bottom edge, keep its top visible with room for the
+  // tallest it can get (Cell.tsx clamps at 520px).
+  const codeRef = useRef<HTMLDivElement>(null);
+  const wasGeneratingRef = useRef(false);
+  useLayoutEffect(() => {
+    const finished = wasGeneratingRef.current && !ui.generating;
+    wasGeneratingRef.current = ui.generating;
+    if (!finished || !activeTurn.extractedCode) return;
+    const code = codeRef.current;
+    const pane = code?.closest(".pane");
+    if (!code || !pane) return;
+    const paneRect = pane.getBoundingClientRect();
+    const top = code.getBoundingClientRect().top - paneRect.top;
+    const room = Math.min(MAX_PROMPT_HEIGHT, paneRect.height) + 12;
+    if (top < 0 || top + room > paneRect.height) pane.scrollTop += top - 12;
+  }, [ui.generating, activeTurn.extractedCode]);
+
   const cellState: CellState = {
     id: `${experiment.id}-turn-${lastIdx}`,
     code: activeTurn.extractedCode,
@@ -199,14 +220,16 @@ export default function PromptExperimentPanel({
         )}
 
         {activeTurn.extractedCode && (
-          <Cell
-            index={lastIdx}
-            cell={cellState}
-            theme={theme}
-            onChange={(code) => onUpdateTurnCode(lastIdx, code)}
-            onResetAndRun={() => onResetAndRun(lastIdx)}
-            resetting={resetting}
-          />
+          <div ref={codeRef}>
+            <Cell
+              index={lastIdx}
+              cell={cellState}
+              theme={theme}
+              onChange={(code) => onUpdateTurnCode(lastIdx, code)}
+              onResetAndRun={() => onResetAndRun(lastIdx)}
+              resetting={resetting}
+            />
+          </div>
         )}
 
         {hasRunOnce && (
