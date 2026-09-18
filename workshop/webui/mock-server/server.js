@@ -6,7 +6,15 @@
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { renderFrame } from "./png.js";
-import { API_DOCS, GENERATE_RESPONSE, PRIMARY_CAMERA, TASKS, TASK_PROMPTS, TASK_PROMPTS_JA } from "./fixtures.js";
+import {
+  API_DOCS,
+  GENERATE_RESPONSE,
+  GENERATE_RESPONSE_LONG,
+  PRIMARY_CAMERA,
+  TASKS,
+  TASK_PROMPTS,
+  TASK_PROMPTS_JA,
+} from "./fixtures.js";
 
 const HOST = "127.0.0.1";
 const PORT = 8200;
@@ -163,20 +171,20 @@ function runCellResult(session, cellId, code) {
   };
 }
 
-async function streamGenerate(req, res) {
+async function streamGenerate(req, res, messages) {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+  const response = lastUser.includes("[long]") ? GENERATE_RESPONSE_LONG : GENERATE_RESPONSE;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Mock-Backend": "1",
   });
-  for (let i = 0; i < GENERATE_RESPONSE.length; i += SSE_CHUNK_CHARS) {
-    res.write(`data: ${JSON.stringify({ type: "delta", text: GENERATE_RESPONSE.slice(i, i + SSE_CHUNK_CHARS) })}\n\n`);
+  for (let i = 0; i < response.length; i += SSE_CHUNK_CHARS) {
+    res.write(`data: ${JSON.stringify({ type: "delta", text: response.slice(i, i + SSE_CHUNK_CHARS) })}\n\n`);
     await sleep(SSE_CHUNK_INTERVAL_MS);
   }
-  res.write(
-    `data: ${JSON.stringify({ type: "done", full_text: GENERATE_RESPONSE, code: extractCode(GENERATE_RESPONSE) })}\n\n`,
-  );
+  res.write(`data: ${JSON.stringify({ type: "done", full_text: response, code: extractCode(response) })}\n\n`);
   res.end();
   console.log(`${req.method} ${req.url} -> 200 (sse)`);
 }
@@ -237,8 +245,8 @@ async function handle(req, res) {
     return send(req, res, 200, payload);
   }
   if (req.method === "POST" && action === "experiments/generate") {
-    await readJson(req, { messages: "array" });
-    return streamGenerate(req, res);
+    const body = await readJson(req, { messages: "array" });
+    return streamGenerate(req, res, body.messages);
   }
   if (req.method === "POST" && action === "replay") {
     return send(req, res, 501, "[MOCK] replay is not supported by the mock backend", "text/plain");

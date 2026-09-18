@@ -311,7 +311,9 @@ close_gripper() -> None
         None`;
 
 // Canned LLM reply for prompt mode. The fenced block is what the mock's
-// code extraction returns as `code`.
+// code extraction returns as `code`. A prompt containing "[long]" gets
+// GENERATE_RESPONSE_LONG instead — enough lines to exercise output that
+// outgrows the pane (WORKSHOP_WEBUI_LLM_OUTPUT.md).
 export const GENERATE_RESPONSE = `${MOCK}This is a canned response from the mock backend, not an LLM.
 
 The task is to pick up the red cube. I will sample a grasp pose, approach from above, close the gripper, and lift.
@@ -327,3 +329,21 @@ close_gripper()
 goto_pose(grasp_pos + np.array([0.0, 0.0, 0.1]), grasp_quat)
 \`\`\`
 `;
+
+export const GENERATE_RESPONSE_LONG = [
+  `${MOCK}This is a long canned response from the mock backend, not an LLM.`,
+  "",
+  ...Array.from({ length: 60 }, (_, i) => `Reasoning step ${i + 1}: consider the cube pose, the grasp approach, and the lift height.`),
+  "",
+  "```python",
+  "import numpy as np",
+  "",
+  `# ${MOCK.trim()} generated code (long variant)`,
+  'grasp_pos, grasp_quat = sample_grasp_pose("red cube")',
+  "open_gripper()",
+  "goto_pose(grasp_pos, grasp_quat, z_approach=0.1)",
+  "close_gripper()",
+  "goto_pose(grasp_pos + np.array([0.0, 0.0, 0.1]), grasp_quat)",
+  "```",
+  "",
+].join("\n");
