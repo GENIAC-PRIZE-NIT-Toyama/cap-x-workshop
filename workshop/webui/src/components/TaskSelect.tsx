@@ -51,8 +51,16 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [mode, setMode] = useState<NotebookMode>("manual");
   const [notebooks, setNotebooks] = useState<Notebook[]>(() => listNotebooks());
+  const [mode, setMode] = useState<NotebookMode>(() => {
+    const saved = localStorage.getItem("defaultNotebookMode") as NotebookMode | null;
+    if (saved === "prompt" || saved === "manual") return saved;
+    return listNotebooks()[0]?.mode ?? "manual";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("defaultNotebookMode", mode);
+  }, [mode]);
 
   useEffect(() => {
     listTasks()
@@ -87,7 +95,13 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
                 <span className="notebook-row-meta">{notebookMeta(nb, taskName(nb.taskId))}</span>
               </div>
               <div className="notebook-row-actions">
-                <button disabled={busy} onClick={() => onOpenNotebook(nb)}>
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    localStorage.setItem("defaultNotebookMode", nb.mode);
+                    onOpenNotebook(nb);
+                  }}
+                >
                   開く
                 </button>
                 <button disabled={busy} className="danger" onClick={() => handleDelete(nb.id)}>

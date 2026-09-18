@@ -60,6 +60,29 @@ export interface ChatMessage {
   content: string;
 }
 
+export function extractCode(text: string): string {
+  const closedPython = text.match(/```python\s*\n([\s\S]*?)```/i);
+  if (closedPython) return closedPython[1].trim();
+  const closedAny = text.match(/```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)```/);
+  if (closedAny) return closedAny[1].trim();
+
+  const unclosedPython = text.match(/```python\s*\n([\s\S]*)$/i);
+  if (unclosedPython) {
+    let code = unclosedPython[1];
+    code = code.replace(/```.*$/, "");
+    return code.trim();
+  }
+
+  const unclosedAny = text.match(/```[a-zA-Z0-9_-]*\s*\n([\s\S]*)$/);
+  if (unclosedAny) {
+    let code = unclosedAny[1];
+    code = code.replace(/```.*$/, "");
+    return code.trim();
+  }
+
+  return text.trim();
+}
+
 // Consumes the backend's SSE stream by hand (fetch + ReadableStream) rather
 // than EventSource, since EventSource can't send a POST body — the message
 // history has to go up with the request, not as a query string. Each SSE
@@ -71,11 +94,13 @@ export async function streamGenerate(
   messages: ChatMessage[],
   settings: GenerationSettings,
   onDelta: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ fullText: string; code: string }> {
   const res = await fetch(`/api/sessions/${sessionId}/experiments/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, settings }),
+    signal,
   });
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => "");
@@ -85,37 +110,59 @@ export async function streamGenerate(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let fullText = "";
   let result: { fullText: string; code: string } | null = null;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let sepIdx: number;
-    while ((sepIdx = buffer.indexOf("\n\n")) >= 0) {
-      const frame = buffer.slice(0, sepIdx);
-      buffer = buffer.slice(sepIdx + 2);
-      const payload = frame.startsWith("data: ") ? frame.slice(6) : frame;
-      if (!payload) continue;
+      let sepIdx: number;
+      while ((sepIdx = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        const payload = frame.startsWith("data: ") ? frame.slice(6) : frame;
+        if (!payload) continue;
 
-      const event = JSON.parse(payload) as {
-        type: "delta" | "done" | "error";
-        text?: string;
-        full_text?: string;
-        code?: string;
-      };
-      if (event.type === "delta" && event.text) {
-        onDelta(event.text);
-      } else if (event.type === "error") {
-        throw new Error(event.text ?? "LLM generation failed");
-      } else if (event.type === "done") {
-        result = { fullText: event.full_text ?? "", code: event.code ?? "" };
+        const event = JSON.parse(payload) as {
+          type: "delta" | "done" | "error";
+          text?: string;
+          full_text?: string;
+          code?: string;
+        };
+        if (event.type === "delta" && event.text) {
+          fullText += event.text;
+          onDelta(event.text);
+        } else if (event.type === "error") {
+          throw new Error(event.text ?? "LLM generation failed");
+        } else if (event.type === "done") {
+          result = { fullText: event.full_text ?? fullText, code: event.code ?? extractCode(fullText) };
+        }
       }
     }
+  } catch (err: unknown) {
+    if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+      return { fullText, code: extractCode(fullText) };
+    }
+    throw err;
   }
 
-  if (!result) throw new Error("Stream ended without a completion event");
+  if (signal?.aborted) {
+    return { fullText, code: extractCode(fullText) };
+  }
+
+  if (!result) {
+    if (fullText) {
+      return { fullText, code: extractCode(fullText) };
+    }
+    throw new Error("Stream ended without a completion event");
+  }
   return result;
 }
 

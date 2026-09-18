@@ -195,6 +195,7 @@ export default function App() {
       });
       setFrames(res.frames);
       setMode(notebookMode);
+      localStorage.setItem("defaultNotebookMode", notebookMode);
       setPerceptionSteps([]);
       activeRunFramesRef.current = [];
       setReplayFrames([]);
@@ -243,6 +244,7 @@ export default function App() {
       });
       setFrames(res.frames);
       setMode(notebook.mode);
+      localStorage.setItem("defaultNotebookMode", notebook.mode);
       setPerceptionSteps([]);
       activeRunFramesRef.current = [];
       setReplayFrames([]);
@@ -448,6 +450,12 @@ export default function App() {
     });
   }, []);
 
+  const abortGenRef = useRef<AbortController | null>(null);
+  const handleStopGenerate = useCallback(() => {
+    abortGenRef.current?.abort();
+    abortGenRef.current = null;
+  }, []);
+
   const handleGenerate = useCallback(
     async (expId: string) => {
       if (!session) return;
@@ -467,18 +475,35 @@ export default function App() {
       }
       const settings = exp.turns[turnIndex].settings;
 
+      const controller = new AbortController();
+      abortGenRef.current = controller;
+
       updateExpUi(expId, { generating: true, streamingText: "", genError: null });
       try {
-        const { fullText, code } = await streamGenerate(session.sessionId, messages, settings, (delta) => {
-          setExpUi((prev) => {
-            const cur = prev[expId] ?? newExperimentUiState();
-            return { ...prev, [expId]: { ...cur, streamingText: cur.streamingText + delta } };
-          });
-        });
+        const { fullText, code } = await streamGenerate(
+          session.sessionId,
+          messages,
+          settings,
+          (delta) => {
+            setExpUi((prev) => {
+              const cur = prev[expId] ?? newExperimentUiState();
+              return { ...prev, [expId]: { ...cur, streamingText: cur.streamingText + delta } };
+            });
+          },
+          controller.signal,
+        );
         updateTurn(expId, turnIndex, { llmRawResponse: fullText, extractedCode: code });
         updateExpUi(expId, { generating: false });
-      } catch (err) {
-        updateExpUi(expId, { generating: false, genError: String(err) });
+      } catch (err: unknown) {
+        if (controller.signal.aborted) {
+          updateExpUi(expId, { generating: false });
+        } else {
+          updateExpUi(expId, { generating: false, genError: String(err) });
+        }
+      } finally {
+        if (abortGenRef.current === controller) {
+          abortGenRef.current = null;
+        }
       }
     },
     [session, experiments, updateExpUi, updateTurn],
@@ -543,6 +568,15 @@ export default function App() {
           "(ここに追加の指示があれば書いてください)",
         ].join("\n");
         return { ...exp, turns: [...exp.turns, newTurn(seeded, { ...lastTurn.settings })] };
+      }),
+    );
+  }, []);
+
+  const handleCancelRefineTurn = useCallback((expId: string) => {
+    setExperiments((prev) =>
+      prev.map((exp) => {
+        if (exp.id !== expId || exp.turns.length <= 1) return exp;
+        return { ...exp, turns: exp.turns.slice(0, -1) };
       }),
     );
   }, []);
@@ -685,8 +719,10 @@ export default function App() {
                     onUpdateTurnSettings={(turnIndex, settings) => updateTurn(exp.id, turnIndex, { settings })}
                     onUpdateTurnCode={(turnIndex, code) => updateTurn(exp.id, turnIndex, { extractedCode: code })}
                     onGenerate={() => handleGenerate(exp.id)}
+                    onStopGenerate={handleStopGenerate}
                     onResetAndRun={() => handleResetAndRunExperiment(exp.id)}
                     onAddRefineTurn={() => handleAddRefineTurn(exp.id)}
+                    onCancelRefineTurn={() => handleCancelRefineTurn(exp.id)}
                     onDeleteExperiment={() => handleDeleteExperiment(exp.id)}
                     canDelete={experiments.length > 1}
                   />
