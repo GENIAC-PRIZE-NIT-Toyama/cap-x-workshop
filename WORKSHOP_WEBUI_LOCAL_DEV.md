@@ -109,7 +109,7 @@ npm run dev    # ターミナル2: Vite dev server (localhost:5173)
 | `WS .../stream` | Workerの`/stream`を中継。`{"camera", "image"}`のJSONテキスト（`app.py:146-194`, `worker_server.py:106`） | セル実行中のみ、約6fpsで合成フレームを送る。未知の`session_id`は`4004`でclose（本物と同じコード） |
 | `POST .../cells/run` | `env.step(code)`（`env_runtime.py:109`） | §4.1 |
 | `POST .../reset` | `env.reset()`→フレーム・`task_prompt`・`api_docs`（`env_runtime.py:95-107`） | ステップカウンタを0に戻し、初期フレームを返す |
-| `POST .../experiments/generate` | LLMをSSE中継。`delta`→`done`（`app.py:210-262`） | 固定の応答文を数十文字ずつ`delta`で流し、` ```python `フェンスから抽出した`code`を`done`で返す |
+| `POST .../experiments/generate` | LLMをSSE中継。`delta`→`done`（`app.py:210-262`） | 固定の応答文を数十文字ずつ`delta`で流し、pythonのコードフェンスから抽出した`code`を`done`で返す |
 | `POST .../replay` | mp4の`FileResponse`（`app.py:269-276`） | `501` + `[MOCK] replay is not supported` |
 | `DELETE .../{id}` | コンテナ破棄。既知・未知を問わず`200` `{"status":"closed"}`（`app.py:278-282`） | 同じ。未知IDでも`200` |
 
@@ -132,6 +132,7 @@ npm run dev    # ターミナル2: Vite dev server (localhost:5173)
 ### 4.2 `task_prompt`と`api_docs`のfixture
 
 - `task_prompt`は`capx/envs/tasks/franka/*.py`の`PROMPT`定数（例: `franka_lift.py:3-8`）を**英語のまま**写す。これが後続の英日切り替え作業の対象であり、モック上で本番と同じ文面を見られることに意味がある。
+- `task_prompt_ja`は`config.py`の`prompt_ja`の写し（`WORKSHOP_WEBUI_PROMPT_LANG.md`）。本物と同じく`null`なら「日本語なし」を意味する。
 - `api_docs`は`ApiBase.combined_doc()`（`capx/integrations/base_api.py:96-121`）の書式（`name(signature)` / `  Doc:` / 4スペースインデントの本文）で、visual tierの主要5関数（`get_object_pose`, `sample_grasp_pose`, `goto_pose`, `open_gripper`, `close_gripper`）分を手書きする。`ApiDocsModal`のMonaco表示を確認できればよく、全関数を網羅しない。**全タスクで同じ内容を返す**（本物はタスクのAPI tierごとに異なり、例えば`two_arm_handover`は`goto_pose_arm0/1`等を公開する — §6）。
 - これらは`config.py`・capx本体からの**手動コピー**であり、自動同期しない。本体が変わってもモックは追従しない前提（§6）。
 
@@ -180,7 +181,7 @@ curl/Node（全エンドポイント）とPlaywright（Chromium）で以下を�
 - タスク一覧に`[MOCK]`付きの6タスクが表示される。未知の`task_id`は`404`
 - 手動モード: セッション開始→英語`task_prompt`バナー→セル実行（約1.5秒、実行中に`/stream`へ10フレーム）→`stdout`表示→自動リプレイ→Perceptionパネルに画像付きステップ
 - `raise`/`error`を含むセルは`ok: false`＋トレースバック風`stderr`
-- プロンプトモード: SSEで文面がストリーミング→` ```python `フェンスからコード抽出→「リセット&Run」で実行
+- プロンプトモード: SSEで文面がストリーミング→pythonのコードフェンスからコード抽出→「リセット&Run」で実行
 - APIドキュメントモーダル（Monaco read-only）に`combined_doc()`書式のfixtureが表示される
 - `replay`は`501`、未知セッションへのWebSocketは`4004`でclose、`DELETE`は既知・未知を問わず`200`、削除後の`observation`は`404`
 
