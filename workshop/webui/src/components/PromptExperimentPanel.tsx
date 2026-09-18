@@ -1,6 +1,11 @@
+import { useLayoutEffect, useRef } from "react";
 import Cell, { type CellState } from "./Cell";
 import type { GenerationSettings, PromptExperiment } from "../notebooks";
 import type { CellResult } from "../types";
+
+// Same ceiling as Cell.tsx's MAX_EDITOR_HEIGHT so the prompt box and the
+// code block below it grow and stop growing the same way.
+const MAX_PROMPT_HEIGHT = 520;
 
 // Transient, per-turn execution state — mirrors CellState's running/result/
 // error fields, but kept outside the persisted PromptTurn (notebooks.ts)
@@ -60,6 +65,22 @@ export default function PromptExperimentPanel({
   const activeRunState = ui.runStates[lastIdx] ?? { running: false, result: null, error: null };
   const hasRunOnce = activeRunState.result !== null;
 
+  // Keyed on the text (not onChange) so a turn swap or a notebook load also
+  // gets the right height, not just typing. Resetting to auto first lets
+  // the box shrink when lines are deleted. Measured with overflow hidden
+  // and only switched to auto once clamped: with auto, Chromium keeps a
+  // scrollbar gutter on a textarea even when the content fits exactly.
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.overflowY = "hidden";
+    el.style.height = "auto";
+    const needed = el.scrollHeight + el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(MAX_PROMPT_HEIGHT, needed)}px`;
+    el.style.overflowY = needed > MAX_PROMPT_HEIGHT ? "auto" : "hidden";
+  }, [activeTurn.userText]);
+
   const cellState: CellState = {
     id: `${experiment.id}-turn-${lastIdx}`,
     code: activeTurn.extractedCode,
@@ -100,11 +121,11 @@ export default function PromptExperimentPanel({
           {lastIdx === 0 ? "プロンプト" : `Self-Refine プロンプト(ターン${lastIdx + 1})`}
         </div>
         <textarea
+          ref={promptRef}
           className="prompt-editor"
           value={activeTurn.userText}
           onChange={(e) => onUpdateTurnText(lastIdx, e.target.value)}
           disabled={ui.generating}
-          rows={10}
           placeholder="LLMに送るプロンプトを自由に編集してください。"
         />
 
