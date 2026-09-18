@@ -7,6 +7,11 @@ import type { CellResult } from "../types";
 // code block below it grow and stop growing the same way.
 const MAX_PROMPT_HEIGHT = 520;
 
+// How far (px) the streaming output's bottom edge may sit below the pane's
+// visible bottom before we treat it as "the user scrolled away" and stop
+// following. Our own scrolls land at 0, so only a user scroll exceeds it.
+const FOLLOW_THRESHOLD = 40;
+
 // Transient, per-turn execution state — mirrors CellState's running/result/
 // error fields, but kept outside the persisted PromptTurn (notebooks.ts)
 // since frames/reward/perception_steps are never saved, only stdout/stderr
@@ -81,6 +86,39 @@ export default function PromptExperimentPanel({
     el.style.overflowY = needed > MAX_PROMPT_HEIGHT ? "auto" : "hidden";
   }, [activeTurn.userText]);
 
+  // While streaming, keep the bottom of the output in view by scrolling the
+  // enclosing pane (the page itself never scrolls — .pane does). Following
+  // stops when the user scrolls up and resumes once they come back near
+  // the bottom.
+  const outputRef = useRef<HTMLPreElement>(null);
+  const followRef = useRef(true);
+
+  const outputOverhang = () => {
+    const pre = outputRef.current;
+    const pane = pre?.closest(".pane");
+    if (!pre || !pane) return null;
+    return { pane, overhang: pre.getBoundingClientRect().bottom - pane.getBoundingClientRect().bottom };
+  };
+
+  useLayoutEffect(() => {
+    if (!ui.generating) return;
+    followRef.current = true;
+    const pane = outputRef.current?.closest(".pane");
+    if (!pane) return;
+    const onScroll = () => {
+      const o = outputOverhang();
+      if (o) followRef.current = o.overhang <= FOLLOW_THRESHOLD;
+    };
+    pane.addEventListener("scroll", onScroll);
+    return () => pane.removeEventListener("scroll", onScroll);
+  }, [ui.generating]);
+
+  useLayoutEffect(() => {
+    if (!ui.generating || !followRef.current) return;
+    const o = outputOverhang();
+    if (o && o.overhang > 0) o.pane.scrollTop += o.overhang;
+  }, [ui.generating, ui.streamingText]);
+
   const cellState: CellState = {
     id: `${experiment.id}-turn-${lastIdx}`,
     code: activeTurn.extractedCode,
@@ -154,7 +192,7 @@ export default function PromptExperimentPanel({
         {(ui.generating || activeTurn.llmRawResponse) && (
           <details className="llm-output" open={ui.generating}>
             <summary>LLM出力{ui.generating ? "(ストリーミング中...)" : ""}</summary>
-            <pre className="prompt-text-readonly">
+            <pre ref={outputRef} className="prompt-text-readonly">
               {ui.generating ? ui.streamingText : activeTurn.llmRawResponse}
             </pre>
           </details>
