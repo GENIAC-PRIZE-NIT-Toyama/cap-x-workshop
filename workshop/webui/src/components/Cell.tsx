@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import { RUN_SHORTCUT_LABEL } from "../shortcut";
 import type { CellResult } from "../types";
 
 const MIN_EDITOR_HEIGHT = 60;
@@ -51,6 +52,13 @@ export default function Cell({
   const [height, setHeight] = useState(MIN_EDITOR_HEIGHT);
   const runBlocked = cell.running || resetting || (disableWhenEmpty && cell.code.trim() === "");
 
+  // ⌘/Ctrl+Enter runs the cell: "▶ Run" in manual mode, "リセット&Run" in
+  // prompt mode (which has no plain Run). Monaco registers the command once
+  // at mount, so it reads the latest handler/state through a ref rather
+  // than closing over the first render's props.
+  const shortcutRef = useRef({ blocked: runBlocked, run: onRun ?? onResetAndRun });
+  shortcutRef.current = { blocked: runBlocked, run: onRun ?? onResetAndRun };
+
   // Grow the editor with the number of lines instead of a fixed height —
   // getContentHeight() already accounts for line count/wrapping, so this is
   // just clamped to a sane [min, max] range (beyond max it scrolls inside
@@ -62,10 +70,15 @@ export default function Cell({
     setHeight(Math.min(MAX_EDITOR_HEIGHT, Math.max(MIN_EDITOR_HEIGHT, contentHeight)));
   }, []);
 
-  const handleMount: OnMount = (editor) => {
+  const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     updateHeight();
     editor.onDidContentSizeChange(updateHeight);
+    const runFromKeyboard = () => {
+      if (!shortcutRef.current.blocked) shortcutRef.current.run();
+    };
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runFromKeyboard);
+    editor.addCommand(monaco.KeyMod.WinCtrl | monaco.KeyCode.Enter, runFromKeyboard);
   };
 
   return (
@@ -73,7 +86,7 @@ export default function Cell({
       <div className="cell-header">
         <span className="cell-index">[{index + 1}]</span>
         {onRun && (
-          <button className="run-btn" onClick={onRun} disabled={runBlocked}>
+          <button className="run-btn" onClick={onRun} disabled={runBlocked} title={`このセルを実行 (${RUN_SHORTCUT_LABEL})`}>
             {cell.running ? "実行中..." : "▶ Run"}
           </button>
         )}
@@ -81,7 +94,7 @@ export default function Cell({
           className="reset-run-btn"
           onClick={onResetAndRun}
           disabled={runBlocked}
-          title="環境を初期化して、このセルのみを実行"
+          title={`環境を初期化して、このセルのみを実行${onRun ? "" : ` (${RUN_SHORTCUT_LABEL})`}`}
         >
           {resetting ? "リセット中..." : cell.running ? "実行中..." : "リセット&Run"}
         </button>
