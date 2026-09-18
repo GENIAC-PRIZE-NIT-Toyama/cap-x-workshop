@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useMonaco } from "@monaco-editor/react";
+import { parseApiDocs } from "./apiDocs";
 import {
   type ChatMessage,
   closeSession,
@@ -88,6 +90,55 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("promptLang", promptLang);
   }, [promptLang]);
+
+  // Offer the session's API functions (parsed from api_docs) as completions
+  // in every code cell. Registered once per session at the language level,
+  // not per Cell, so the candidates aren't duplicated.
+  const monaco = useMonaco();
+  const apiDocs = session?.apiDocs;
+  useEffect(() => {
+    if (!monaco || apiDocs === undefined) return;
+    const functions = parseApiDocs(apiDocs);
+    const apiNames = new Set(functions.map((f) => f.name));
+    const disposable = monaco.languages.registerCompletionItemProvider("python", {
+      provideCompletionItems(model, position) {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const api = functions.map((f) => ({
+          label: f.name,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: f.name,
+          detail: f.signature,
+          documentation: f.doc,
+          range,
+        }));
+        // Monaco drops its built-in word-based suggestions as soon as any
+        // provider returns results, so re-create them here: every word in
+        // every python model (same as its "matchingDocuments" default),
+        // minus API names and the word being typed.
+        const words = new Set<string>();
+        for (const m of monaco.editor.getModels()) {
+          if (m.getLanguageId() !== "python") continue;
+          for (const w of m.getValue().match(/[A-Za-z_]\w*/g) ?? []) {
+            if (!apiNames.has(w) && w !== word.word) words.add(w);
+          }
+        }
+        const text = [...words].map((w) => ({
+          label: w,
+          kind: monaco.languages.CompletionItemKind.Text,
+          insertText: w,
+          range,
+        }));
+        return { suggestions: [...api, ...text] };
+      },
+    });
+    return () => disposable.dispose();
+  }, [monaco, apiDocs]);
 
   const [frames, setFrames] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<NotebookMode>("manual");
