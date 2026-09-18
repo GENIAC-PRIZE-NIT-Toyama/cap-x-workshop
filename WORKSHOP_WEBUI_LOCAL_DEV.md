@@ -109,7 +109,7 @@ npm run dev    # ターミナル2: Vite dev server (localhost:5173)
 | `WS .../stream` | Workerの`/stream`を中継。`{"camera", "image"}`のJSONテキスト（`app.py:146-194`, `worker_server.py:106`） | セル実行中のみ、約6fpsで合成フレームを送る。未知の`session_id`は`4004`でclose（本物と同じコード） |
 | `POST .../cells/run` | `env.step(code)`（`env_runtime.py:109`） | §4.1 |
 | `POST .../reset` | `env.reset()`→フレーム・`task_prompt`・`api_docs`（`env_runtime.py:95-107`） | ステップカウンタを0に戻し、初期フレームを返す |
-| `POST .../experiments/generate` | LLMをSSE中継。`delta`→`done`（`app.py:210-262`） | 固定の応答文を数十文字ずつ`delta`で流し、pythonのコードフェンスから抽出した`code`を`done`で返す |
+| `POST .../experiments/generate` | LLMをSSE中継。`delta`→`done`（`app.py:210-262`） | 固定の応答文を数十文字ずつ`delta`で流し、pythonのコードフェンスから抽出した`code`を`done`で返す。最後のユーザーメッセージに`[long]`を含むと約60行の長い応答（約9秒）にする — 出力欄の伸縮・追従の確認用（`WORKSHOP_WEBUI_LLM_OUTPUT.md`） |
 | `POST .../replay` | mp4の`FileResponse`（`app.py:269-276`） | `501` + `[MOCK] replay is not supported` |
 | `DELETE .../{id}` | コンテナ破棄。既知・未知を問わず`200` `{"status":"closed"}`（`app.py:278-282`） | 同じ。未知IDでも`200` |
 
