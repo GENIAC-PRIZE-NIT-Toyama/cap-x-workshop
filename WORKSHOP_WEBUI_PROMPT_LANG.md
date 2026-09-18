@@ -16,10 +16,10 @@
 
 ### Frontend
 
-- `workshop/webui/src/components/TaskPromptBanner.tsx`（新規）: バナー本体。文言の右端に「日本語 | EN」のトグルを置く。`task_prompt_ja` が `null` のタスクでは英語のみを表示し、トグルを出さない
+- `workshop/webui/src/components/TaskPromptBanner.tsx`（新規）: バナー本体。文言の右端に、現在の言語名と▼を表示するドロップダウンを1つ置き、開くと「日本語 / English」を選べる。外側クリックと Esc で閉じる。`task_prompt_ja` が `null` のタスクでは英語のみを表示し、ドロップダウンを出さない
 - `workshop/webui/src/App.tsx`: `SessionInfo` に `taskPromptJa` を追加し、セッション作成・保存済みノートブックを開く・環境リセットの3経路で `task_prompt_ja` を保持する。言語の選択は `promptLang` ステートで持ち、`localStorage`（キー `promptLang`）に記憶する。既定は `"ja"`
 - `workshop/webui/src/types.ts`: `CreateSessionResponse` と `ResetResponse` に `task_prompt_ja: string | null` を追加
-- `workshop/webui/src/styles.css`: `.task-prompt` を flex にして文言とトグルを横並びにし、`.task-prompt-lang-btn` を追加
+- `workshop/webui/src/styles.css`: `.task-prompt` を flex にして文言とドロップダウンを横並びにし、`.task-prompt-lang-*`（ボタン・メニュー・選択肢）を追加
 
 ### Mock
 
@@ -30,7 +30,8 @@
 - **日本語訳は `config.py` に置く。** `WORKSHOP_WEBUI_SPEC.md` §1.1 は「タスクの追加・変更は `config.py` の `TASKS` を編集するだけで完結させる」という設計で、タスク説明文（`description`）の日本語も既にそこにある。プロンプトの日本語だけをフロントの辞書に置くと、タスクの日本語文言が `config.py` と TypeScript に分散し、片方だけ直し忘れる余地ができる。主催者が当日タスクを差し替えるとき触る場所を1箇所に保つ
 - **英語原文はバックエンド（Worker 経由）のまま、日本語だけ追加する。** 環境が実際に使っているプロンプトは英語であり、日本語は読むための補助。英語を `config.py` に複製しない（capx 側の `PROMPT` が変わったときに二重管理になる）
 - **日本語がデフォルト。** UI の他の文言がすべて日本語で、参加者も日本語話者。英語は「原文を見たい」ときの切り替え先
-- **トグルはバナー内。** 切り替わるのはバナーの文言だけなので、その隣に置く。ツールバーに置くと何が切り替わるのかが離れて見えにくい
+- **切り替えはバナー内。** 切り替わるのはバナーの文言だけなので、その隣に置く。ツールバーに置くと何が切り替わるのかが離れて見えにくい
+- **言語ごとのボタンを並べず、ドロップダウン1つにする。** 「日本語 | EN」の2ボタン並びより横幅を取らず、言語が増えても幅が変わらない。閉じた状態では現在の言語名だけが見える。素の `<select>` ではなくカスタム実装にしたのは、テーマ（ライト/ダーク）に合わせた見た目にするため
 - **選択は `localStorage` に記憶する。** テーマ（`theme`）と同じ方式。セッションを跨いでも、リロードしても保たれる
 - **表示は従来通り1段落のまま。** 原文には改行や箇条書きがあるが、`white-space: pre-wrap` にするとバナーの高さが大きく増えてエディタとカメラの領域を圧迫するため、改行を潰した1段落表示を維持した。日本語訳も同じ扱い
 - **`prompt_ja` が無いタスクではトグルを出さない。** `None` を「日本語なし」の意味に使い、フロントは英語のみを表示する。新しいタスクを追加するとき、訳を後回しにしても画面が壊れない
@@ -45,10 +46,12 @@
 
 モックバックエンド（`WORKSHOP_WEBUI_LOCAL_DEV.md`）＋ Chromium で確認。本物の Backend ではローカルで実行できないため、`app.py` / `config.py` は `py_compile` と `config.py` 単体 import（6タスクの `prompt_ja` が入っていること）まで。
 
-- 初期表示が日本語、バナー右端に「日本語 | EN」
-- EN に切り替えると英語原文に変わり、`localStorage.promptLang` が `"en"` になる
-- EN のまま環境リセットしても EN が維持される（reset レスポンスの `task_prompt_ja` で再設定しても選択は変わらない）
-- リロードして別タスクを開いても EN が維持される
+- 初期表示が日本語、バナー右端に「日本語 ▼」
+- ▼を押すと「日本語 / English」のメニューが開き、English を選ぶと英語原文に変わってメニューが閉じ、`localStorage.promptLang` が `"en"` になる
+- メニューを開いた状態で外側をクリック、または Esc を押すと閉じる
+- English のまま環境リセットしても English が維持される（reset レスポンスの `task_prompt_ja` で再設定しても選択は変わらない）
+- リロードして別タスクを開いても English が維持される
+- ダークモードでもメニューの背景・文字色がテーマに追従する
 - `tsc -b` と `npm run build` が通る
 
 ## 備考
