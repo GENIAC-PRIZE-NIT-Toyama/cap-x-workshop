@@ -15,6 +15,7 @@ import Cell, { type CellState } from "./components/Cell";
 import PerceptionPanel from "./components/PerceptionPanel";
 import Toolbar from "./components/Toolbar";
 import ApiDocsModal from "./components/ApiDocsModal";
+import TaskPromptBanner, { type PromptLang } from "./components/TaskPromptBanner";
 import PromptExperimentPanel, {
   newExperimentUiState,
   type ExperimentUiState,
@@ -56,6 +57,7 @@ interface SessionInfo {
   sessionId: string;
   taskId: string;
   taskPrompt: string | null;
+  taskPromptJa: string | null;
   apiDocs: string;
 }
 
@@ -78,6 +80,14 @@ export default function App() {
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
+
+  const [promptLang, setPromptLang] = useState<PromptLang>(
+    () => (localStorage.getItem("promptLang") === "en" ? "en" : "ja"),
+  );
+
+  useEffect(() => {
+    localStorage.setItem("promptLang", promptLang);
+  }, [promptLang]);
 
   const [frames, setFrames] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<NotebookMode>("manual");
@@ -129,6 +139,7 @@ export default function App() {
         sessionId: res.session_id,
         taskId: res.task_id,
         taskPrompt: res.task_prompt,
+        taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
@@ -176,6 +187,7 @@ export default function App() {
         sessionId: res.session_id,
         taskId: res.task_id,
         taskPrompt: res.task_prompt,
+        taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
       });
       setFrames(res.frames);
@@ -303,7 +315,9 @@ export default function App() {
       // (pre-reset) run result get cleared, not the notebook itself.
       setCells((prev) => prev.map((c) => ({ ...c, result: null, error: null })));
       setPerceptionSteps([]);
-      setSession((prev) => (prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt } : prev));
+      setSession((prev) =>
+        prev ? { ...prev, apiDocs: res.api_docs, taskPrompt: res.task_prompt, taskPromptJa: res.task_prompt_ja } : prev,
+      );
     } finally {
       setResetting(false);
     }
@@ -549,7 +563,14 @@ export default function App() {
         savingReplay={savingReplay}
       />
       <ApiDocsModal visible={docsVisible} docs={session.apiDocs} theme={theme} onClose={() => setDocsVisible(false)} />
-      {session.taskPrompt && <p className="task-prompt">{session.taskPrompt}</p>}
+      {session.taskPrompt && (
+        <TaskPromptBanner
+          prompt={session.taskPrompt}
+          promptJa={session.taskPromptJa}
+          lang={promptLang}
+          onChangeLang={setPromptLang}
+        />
+      )}
       <div className="main-panes">
         <div className="pane pane-camera">
           <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />
