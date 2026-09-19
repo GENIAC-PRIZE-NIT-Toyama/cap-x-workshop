@@ -814,7 +814,7 @@ pre {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   margin-bottom: 4px;
-  padding: 10px 12px 12px;
+  padding: 12px;
   box-shadow: var(--shadow-sm);
   background: var(--surface);
 }
@@ -865,11 +865,11 @@ pre {
   font-size: 0.82rem;
   line-height: 1.5;
   margin: 0;
+  margin-top: 6px;
 }
 
 .prompt-turn.active {
   border-top: 1px dashed var(--border);
-  padding-top: 10px;
 }
 
 .prompt-editor {
@@ -917,11 +917,71 @@ pre {
   color: var(--text);
 }
 
+.stop-btn {
+  background: var(--danger);
+  color: white;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
+  color: white;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.copy-btn:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--primary);
+}
+
+.copy-btn.copied,
+.copy-btn.copied:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.copy-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.prompt-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.prompt-header-row .prompt-turn-label {
+  margin: 0;
+}
+
 .llm-output {
   margin-top: 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
+  padding: 6px;
   background: var(--surface-alt);
 }
 
@@ -930,6 +990,14 @@ pre {
   font-size: 0.82rem;
   color: var(--text-muted);
   font-weight: 500;
+  padding-left: 4px;
+}
+
+.llm-output-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
 }
 
 .refine-btn {

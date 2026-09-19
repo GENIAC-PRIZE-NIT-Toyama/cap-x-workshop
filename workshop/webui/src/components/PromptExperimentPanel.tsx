@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useState, useLayoutEffect, useRef } from "react";
 import Cell, { type CellState } from "./Cell";
 import type { GenerationSettings, PromptExperiment } from "../notebooks";
 import type { CellResult } from "../types";
@@ -44,8 +44,10 @@ interface Props {
   onUpdateTurnSettings: (turnIndex: number, settings: GenerationSettings) => void;
   onUpdateTurnCode: (turnIndex: number, code: string) => void;
   onGenerate: (turnIndex: number) => void;
+  onStopGenerate?: () => void;
   onResetAndRun: (turnIndex: number) => void;
   onAddRefineTurn: () => void;
+  onCancelRefineTurn?: () => void;
   onDeleteExperiment: () => void;
   canDelete: boolean;
 }
@@ -60,8 +62,10 @@ export default function PromptExperimentPanel({
   onUpdateTurnSettings,
   onUpdateTurnCode,
   onGenerate,
+  onStopGenerate,
   onResetAndRun,
   onAddRefineTurn,
+  onCancelRefineTurn,
   onDeleteExperiment,
   canDelete,
 }: Props) {
@@ -161,9 +165,15 @@ export default function PromptExperimentPanel({
         <details key={i} className="prompt-turn-history">
           <summary>ターン{i + 1}(完了) — クリックして表示</summary>
           <div className="prompt-turn-history-body">
-            <div className="prompt-turn-label">送信したプロンプト</div>
+            <div className="prompt-header-row">
+              <div className="prompt-turn-label">送信したプロンプト</div>
+              <CopyButton text={turn.userText} label="コピー" />
+            </div>
             <pre className="prompt-text-readonly">{turn.userText}</pre>
-            <div className="prompt-turn-label">LLMの出力</div>
+            <div className="prompt-header-row">
+              <div className="prompt-turn-label">LLMの出力</div>
+              <CopyButton text={turn.llmRawResponse} label="コピー" />
+            </div>
             <pre className="prompt-text-readonly">{turn.llmRawResponse}</pre>
             {turn.lastRun && (
               <>
@@ -176,8 +186,11 @@ export default function PromptExperimentPanel({
       ))}
 
       <div className="prompt-turn active">
-        <div className="prompt-turn-label">
-          {lastIdx === 0 ? "プロンプト" : `Self-Refine プロンプト(ターン${lastIdx + 1})`}
+        <div className="prompt-header-row">
+          <div className="prompt-turn-label">
+            {lastIdx === 0 ? "プロンプト" : `Self-Refine プロンプト(ターン${lastIdx + 1})`}
+          </div>
+          <CopyButton text={activeTurn.userText} label="プロンプトをコピー" />
         </div>
         <textarea
           ref={promptRef}
@@ -206,13 +219,38 @@ export default function PromptExperimentPanel({
           <button className="run-btn" onClick={() => onGenerate(lastIdx)} disabled={ui.generating || resetting}>
             {ui.generating ? "生成中..." : "生成"}
           </button>
+          {ui.generating && onStopGenerate && (
+            <button className="stop-btn" onClick={onStopGenerate} type="button">
+              ■ 停止
+            </button>
+          )}
+          {lastIdx > 0 && onCancelRefineTurn && !ui.generating && (
+            <button
+              type="button"
+              className="delete-btn"
+              onClick={onCancelRefineTurn}
+              disabled={resetting}
+              title="このSelf-Refineターンをキャンセルして前のターンに戻る"
+              style={{ marginLeft: "0" }}
+            >
+              ✕ Self-Refineをキャンセル
+            </button>
+          )}
         </div>
 
         {ui.genError && <p className="error">生成に失敗しました: {ui.genError}</p>}
 
         {(ui.generating || activeTurn.llmRawResponse) && (
           <details className="llm-output" open={ui.generating}>
-            <summary>LLM出力{ui.generating ? "(ストリーミング中...)" : ""}</summary>
+            <summary>
+              <div className="llm-output-summary">
+                <span>LLM出力{ui.generating ? "(ストリーミング中...)" : ""}</span>
+                <CopyButton
+                  text={ui.generating ? ui.streamingText : activeTurn.llmRawResponse}
+                  label="出力をコピー"
+                />
+              </div>
+            </summary>
             <pre ref={outputRef} className="prompt-text-readonly">
               {ui.generating ? ui.streamingText : activeTurn.llmRawResponse}
             </pre>
@@ -221,6 +259,10 @@ export default function PromptExperimentPanel({
 
         {activeTurn.extractedCode && (
           <div ref={codeRef}>
+            <div className="prompt-header-row" style={{ marginTop: "14px", marginBottom: "6px" }}>
+              <div className="prompt-turn-label" style={{ fontWeight: 600 }}>生成されたコード</div>
+              <CopyButton text={activeTurn.extractedCode} label="コードをコピー" />
+            </div>
             <Cell
               index={lastIdx}
               cell={cellState}
@@ -239,5 +281,26 @@ export default function PromptExperimentPanel({
         )}
       </div>
     </div>
+  );
+}
+
+function CopyButton({ text, label = "コピー" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className={`copy-btn ${copied ? "copied" : ""}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!text) return;
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      disabled={!text}
+      title="クリップボードにコピー"
+    >
+      {copied ? "✓ コピー完了" : `${label}`}
+    </button>
   );
 }
