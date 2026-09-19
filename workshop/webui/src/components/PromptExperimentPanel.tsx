@@ -257,7 +257,10 @@ export default function PromptExperimentPanel({
           </details>
         )}
 
-        {activeTurn.extractedCode && (
+        {/* Keyed on "a generation completed", not on the code itself —
+            the code is freely editable and clearing it must not remove
+            the cell. */}
+        {activeTurn.llmRawResponse && (
           <div ref={codeRef}>
             <div className="prompt-header-row" style={{ marginTop: "14px", marginBottom: "6px" }}>
               <div className="prompt-turn-label" style={{ fontWeight: 600 }}>生成されたコード</div>
@@ -270,6 +273,7 @@ export default function PromptExperimentPanel({
               onChange={(code) => onUpdateTurnCode(lastIdx, code)}
               onResetAndRun={() => onResetAndRun(lastIdx)}
               resetting={resetting}
+              disableWhenEmpty
             />
           </div>
         )}
