@@ -26,16 +26,15 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from workshop.backend.env_runtime import EnvRuntime, _encode_rgb_png
+from workshop.backend.env_runtime import EnvRuntime, _encode_rgb_jpeg, _encode_rgb_png
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # How often the /stream websocket checks for a new frame while idle/running.
 # robosuite's own sub-sampling (RobosuiteBaseEnv._SUBSAMPLE_RATE) already caps
-# how often a new frame actually appears; this just caps how eagerly we poll
-# for one.
-STREAM_POLL_INTERVAL_SECONDS = 0.1
+# how often a new frame actually appears; polling at ~30 FPS ensures smooth delivery.
+STREAM_POLL_INTERVAL_SECONDS = 0.033
 
 
 class RunCellRequest(BaseModel):
@@ -91,19 +90,19 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
         """
         await websocket.accept()
         camera_name = runtime.primary_camera_name()
+        def _fetch_and_encode(index: int) -> str | None:
+            f = runtime.recorded_frame(index)
+            return _encode_rgb_jpeg(f) if f is not None else None
+
         last_sent = -1
         try:
             while True:
                 count = runtime.recorded_frame_count()
                 if count > 0 and count - 1 != last_sent:
                     last_sent = count - 1
-                    frame = await asyncio.to_thread(runtime.recorded_frame, last_sent)
-                    if frame is not None:
-                        # JSON envelope, not a bare base64 string: which
-                        # `frames` key this belongs to varies per task (see
-                        # EnvRuntime.primary_camera_name()) and must never be
-                        # assumed on the frontend.
-                        await websocket.send_json({"camera": camera_name, "image": _encode_rgb_png(frame)})
+                    b64_image = await asyncio.to_thread(_fetch_and_encode, last_sent)
+                    if b64_image is not None:
+                        await websocket.send_json({"camera": camera_name, "image": b64_image})
                 await asyncio.sleep(STREAM_POLL_INTERVAL_SECONDS)
         except WebSocketDisconnect:
             pass

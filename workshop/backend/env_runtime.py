@@ -26,6 +26,14 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 
+def _encode_rgb_jpeg(rgb: np.ndarray, quality: int = 85) -> str:
+    """Encode an (H, W, 3) uint8 RGB array as a base64 JPEG string (significantly faster and smaller than PNG)."""
+    image = Image.fromarray(np.ascontiguousarray(rgb).astype("uint8"))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 def _encode_rgb_png(rgb: np.ndarray) -> str:
     """Encode an (H, W, 3) uint8 RGB array as a base64 PNG string."""
     image = Image.fromarray(np.ascontiguousarray(rgb).astype("uint8"))
@@ -49,11 +57,11 @@ def _extract_frames(exec_env: Any, obs: dict[str, Any]) -> dict[str, str]:
         if isinstance(cam_obs, dict):
             rgb = cam_obs.get("images", {}).get("rgb")
             if rgb is not None:
-                frames[camera_name] = _encode_rgb_png(rgb)
+                frames[camera_name] = _encode_rgb_jpeg(rgb)
     try:
         wrist = exec_env.render_wrist()
         if wrist is not None:
-            frames["wrist"] = _encode_rgb_png(wrist)
+            frames["wrist"] = _encode_rgb_jpeg(wrist)
     except Exception:
         # Don't let a wrist-camera hiccup break the whole frame response, but
         # do log it — silently dropping this made "the wrist view never

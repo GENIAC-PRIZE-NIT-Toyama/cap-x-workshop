@@ -1,10 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface Props {
   frames: Record<string, string>;
   replayFrames?: { camera: string; image: string }[];
   activeCamera: string;
   onSelectCamera: (name: string) => void;
+}
+
+export function toImageDataUrl(b64: string): string {
+  if (!b64) return "";
+  if (b64.startsWith("data:")) return b64;
+  if (b64.startsWith("/9j/")) return `data:image/jpeg;base64,${b64}`;
+  if (b64.startsWith("UklGR")) return `data:image/webp;base64,${b64}`;
+  return `data:image/png;base64,${b64}`;
 }
 
 export default function CameraView({ frames, replayFrames, activeCamera, onSelectCamera }: Props) {
@@ -32,12 +40,51 @@ export default function CameraView({ frames, replayFrames, activeCamera, onSelec
         {current === "replay" && replayFrames && replayFrames.length > 0 ? (
           <ReplayPlayer frames={replayFrames} />
         ) : current && frames[current] ? (
-          <img src={`data:image/png;base64,${frames[current]}`} alt={current} style={{ width: "100%", display: "block" }} />
+          <CanvasFrameView key={current} base64Image={frames[current]} alt={current} />
         ) : (
           <div className="camera-placeholder">映像はまだありません</div>
         )}
       </div>
     </div>
+  );
+}
+
+function CanvasFrameView({ base64Image, alt }: { base64Image: string; alt: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!base64Image) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let active = true;
+    const img = new Image();
+    img.onload = () => {
+      if (!active) return;
+      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+      }
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+      }
+    };
+    img.src = toImageDataUrl(base64Image);
+
+    return () => {
+      active = false;
+    };
+  }, [base64Image]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-label={alt}
+      width={512}
+      height={512}
+      style={{ width: "100%", height: "auto", display: "block" }}
+    />
   );
 }
 
@@ -47,7 +94,7 @@ function ReplayPlayer({ frames }: { frames: { camera: string; image: string }[] 
 
   useEffect(() => {
     if (!playing) return;
-    const delay = index === frames.length - 1 ? 1000 : 150;
+    const delay = index === frames.length - 1 ? 1000 : 50;
     const timer = setTimeout(() => {
       setIndex((i) => (i + 1) % frames.length);
     }, delay);
@@ -57,7 +104,7 @@ function ReplayPlayer({ frames }: { frames: { camera: string; image: string }[] 
 
   return (
     <div className="replay-player">
-      <img src={`data:image/png;base64,${frames[index]?.image}`} style={{ width: "100%", display: "block" }} />
+      <CanvasFrameView base64Image={frames[index]?.image} alt="replay" />
       <div className="replay-controls">
         <button onClick={() => setPlaying(!playing)} style={{ width: "80px", cursor: "pointer" }}>{playing ? "⏸ 停止" : "▶ 再生"}</button>
         <button onClick={() => { setPlaying(false); setIndex((i) => Math.max(0, i - 1)); }} style={{ cursor: "pointer" }}>❘◀</button>
