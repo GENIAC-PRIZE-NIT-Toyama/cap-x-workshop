@@ -54,6 +54,15 @@ function newExperiment(initialUserText = ""): PromptExperiment {
   experimentCounter += 1;
   return { id: `exp-${experimentCounter}`, turns: [newTurn(initialUserText)] };
 }
+// A saved notebook carries the ids it was created with, but the counter
+// restarts at 0 on every page load — so the next new experiment would reuse
+// "exp-1" and updateTurn/expUi (both keyed by id) would write to both. Ids
+// only need to be unique within this page, so re-issue them on load; this
+// also repairs notebooks that were already saved with duplicate ids.
+function withFreshId(exp: PromptExperiment): PromptExperiment {
+  experimentCounter += 1;
+  return { ...exp, id: `exp-${experimentCounter}` };
+}
 
 interface SessionInfo {
   sessionId: string;
@@ -254,7 +263,7 @@ export default function App() {
       if (notebook.mode === "prompt") {
         const exps =
           notebook.experiments && notebook.experiments.length > 0
-            ? notebook.experiments
+            ? notebook.experiments.map(withFreshId)
             : [newExperiment()];
         setExperiments(exps);
         setExpUi(Object.fromEntries(exps.map((e) => [e.id, newExperimentUiState()])));
