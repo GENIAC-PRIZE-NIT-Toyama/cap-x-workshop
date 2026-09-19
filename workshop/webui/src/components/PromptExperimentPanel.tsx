@@ -1,7 +1,6 @@
 import { useState, useLayoutEffect, useRef } from "react";
 import Cell, { type CellState } from "./Cell";
 import type { GenerationSettings, PromptExperiment } from "../notebooks";
-import { RUN_SHORTCUT_LABEL, isRunShortcut } from "../shortcut";
 import type { CellResult } from "../types";
 
 // Same ceiling as Cell.tsx's MAX_EDITOR_HEIGHT so the prompt box and the
@@ -74,7 +73,6 @@ export default function PromptExperimentPanel({
   const activeTurn = experiment.turns[lastIdx];
   const activeRunState = ui.runStates[lastIdx] ?? { running: false, result: null, error: null };
   const hasRunOnce = activeRunState.result !== null;
-  const generateBlocked = ui.generating || resetting;
 
   // Keyed on the text (not onChange) so a turn swap or a notebook load also
   // gets the right height, not just typing. Resetting to auto first lets
@@ -199,11 +197,6 @@ export default function PromptExperimentPanel({
           className="prompt-editor"
           value={activeTurn.userText}
           onChange={(e) => onUpdateTurnText(lastIdx, e.target.value)}
-          onKeyDown={(e) => {
-            if (!isRunShortcut(e) || e.nativeEvent.isComposing || generateBlocked) return;
-            e.preventDefault();
-            onGenerate(lastIdx);
-          }}
           disabled={ui.generating}
           placeholder="LLMに送るプロンプトを自由に編集してください。"
         />
@@ -223,12 +216,7 @@ export default function PromptExperimentPanel({
               disabled={ui.generating}
             />
           </label>
-          <button
-            className="run-btn"
-            onClick={() => onGenerate(lastIdx)}
-            disabled={generateBlocked}
-            title={`生成 (${RUN_SHORTCUT_LABEL})`}
-          >
+          <button className="run-btn" onClick={() => onGenerate(lastIdx)} disabled={ui.generating || resetting}>
             {ui.generating ? "生成中..." : "生成"}
           </button>
           {ui.generating && onStopGenerate && (
