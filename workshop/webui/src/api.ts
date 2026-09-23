@@ -1,5 +1,5 @@
 import type { CellResult, CreateSessionResponse, ResetResponse, TaskSummary } from "./types";
-import type { GenerationSettings } from "./notebooks";
+import type { AgentConfig, AgentLoopStatus, GenerationSettings } from "./notebooks";
 
 // All calls use relative paths on purpose: in dev, Vite proxies /api to the
 // backend (vite.config.ts); in production the backend serves this app from
@@ -172,4 +172,111 @@ export async function streamGenerate(
 export function streamUrl(sessionId: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/sessions/${sessionId}/stream`;
+}
+
+// ---------------------------------------------------------------------
+// Agent Mode (WORKSHOP_AGENT_PLAN.md) — mirrors agent_loop.py's event
+// shapes exactly (backend/agent_loop.py's `run_agent_loop()` docstring).
+// Unlike "prompt" mode's streamGenerate() above, the backend drives the
+// whole multi-turn loop itself; this is just the SSE consumer for it.
+// ---------------------------------------------------------------------
+
+export type AgentSSEEvent =
+  | { type: "turn_start"; turn: number }
+  | { type: "llm_delta"; turn: number; text: string }
+  | {
+      type: "turn_done";
+      turn: number;
+      llm_raw: string;
+      code: string;
+      stdout: string;
+      stderr: string;
+      frames: Record<string, string> | null;
+      task_completed: boolean | null;
+    }
+  | { type: "loop_done"; status: AgentLoopStatus; turn: number; detail: string | null };
+
+// Streams one full Agent Loop run. Resolves once the backend's `loop_done`
+// event has been delivered to `onEvent` and the SSE response closes (the
+// backend always emits exactly one `loop_done` then ends the stream — see
+// agent_loop.py) — there is no separate "final result" return value the
+// way streamGenerate() has one; every event, including the terminal one,
+// goes through `onEvent`. `signal` is for the caller's own cleanup (e.g.
+// unmount); actually *stopping* the loop is `stopAgentLoop()` below, which
+// asks the backend to end the loop on its own terms (finishing the current
+// turn's feedback) rather than just severing this fetch.
+export async function runAgentLoop(
+  sessionId: string,
+  config: AgentConfig,
+  onEvent: (event: AgentSSEEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/agent/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      system_prompt: config.systemPrompt,
+      feedback_prompt: config.feedbackPrompt,
+      vision_enabled: config.visionEnabled,
+      termination_mode: config.terminationMode,
+      max_turns: config.maxTurns,
+      settings: config.settings,
+    }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel().catch(() => {});
+        return;
+      }
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx: number;
+      while ((sepIdx = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        const payload = frame.startsWith("data: ") ? frame.slice(6) : frame;
+        if (!payload) continue;
+        onEvent(JSON.parse(payload) as AgentSSEEvent);
+      }
+    }
+  } catch (err: unknown) {
+    if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) return;
+    throw err;
+  }
+}
+
+// Asks the backend to end the in-flight Agent Loop for this session at its
+// next check (see app.py's /agent/stop and agent_loop.py's
+// AgentLoopRegistry) — best-effort, not instant: a cell already executing
+// runs to completion first.
+export function stopAgentLoop(sessionId: string): Promise<Response> {
+  return fetch(`/api/sessions/${sessionId}/agent/stop`, { method: "POST" });
+}
+
+// Renders a System/Feedback Prompt template against arbitrary variables
+// without starting or touching any session — pure Jinja2 rendering (see
+// app.py's /api/agent/preview + prompt_render.py). Returns `{ rendered }`
+// on success or `{ error }` on a template error (undefined variable, bad
+// syntax); never rejects for a template-side problem, only for a network
+// failure.
+export function previewAgentPrompt(
+  template: string,
+  variables: Record<string, unknown>,
+): Promise<{ rendered?: string; error?: string }> {
+  return request("/api/agent/preview", {
+    method: "POST",
+    body: JSON.stringify({ template, variables }),
+  });
 }

@@ -42,17 +42,44 @@ def _encode_rgb_png(rgb: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+# capx/envs/simulators/libero.py's `FrankaLiberoEnv` never sets
+# `render_camera_names` (that attribute is Robosuite-only — see
+# capx/envs/simulators/robosuite_base.py) but always populates these two
+# keys in get_observation() with the same {"images": {"rgb": ...}} shape
+# Robosuite uses, so the extraction loop below works unchanged once given
+# the right key names. "robot0_eye_in_hand" is skipped here on purpose: it's
+# the wrist camera, already covered by the render_wrist() call below under
+# the "wrist" key, and including it here would just duplicate it under a
+# second name.
+_LIBERO_FALLBACK_CAMERAS = ("agentview",)
+
+
+def _is_libero_env(low_level: Any) -> bool:
+    """True for capx's LIBERO simulator, false for Robosuite (and anything
+    else). Mirrors the discriminator capx/envs/trial.py's own
+    `_patch_libero_goal()` uses: only `FrankaLiberoEnv` sets `.handle` (the
+    `LiberoHandle` from capx/integrations/libero), so duck-typing on it here
+    avoids this workshop-only file having to import capx's LIBERO simulator
+    class just to `isinstance()`-check it."""
+    return hasattr(low_level, "handle")
+
+
 def _extract_frames(exec_env: Any, obs: dict[str, Any]) -> dict[str, str]:
     """Pull whatever camera RGB images are present in `obs` plus the wrist view.
 
     Camera keys come from the low-level env's `render_camera_names`
-    (capx/envs/simulators/robosuite_base.py), so this works unchanged for any
-    Robosuite task registered in the task registry (config.py) without this
-    file needing to know which task is running.
+    (capx/envs/simulators/robosuite_base.py) for Robosuite tasks, so this
+    works unchanged for any Robosuite task registered in the task registry
+    (config.py) without this file needing to know which task is running. For
+    LIBERO tasks (which never set that attribute) a fixed fallback camera
+    list is used instead — see `_LIBERO_FALLBACK_CAMERAS`.
     """
     frames: dict[str, str] = {}
     low_level = getattr(exec_env, "low_level_env", None)
-    for camera_name in getattr(low_level, "render_camera_names", []):
+    camera_names = getattr(low_level, "render_camera_names", None)
+    if not camera_names and _is_libero_env(low_level):
+        camera_names = _LIBERO_FALLBACK_CAMERAS
+    for camera_name in camera_names or []:
         cam_obs = obs.get(camera_name)
         if isinstance(cam_obs, dict):
             rgb = cam_obs.get("images", {}).get("rgb")
@@ -68,6 +95,27 @@ def _extract_frames(exec_env: Any, obs: dict[str, Any]) -> dict[str, str]:
         # shows up" reports impossible to diagnose during the workshop.
         logger.warning("render_wrist() failed", exc_info=True)
     return frames
+
+
+def _resolve_task_prompt(exec_env: Any, raw_prompt: str | None) -> str | None:
+    """Expand LIBERO's `{libero_environment_goal}` placeholder, if present.
+
+    `env_configs/libero/*.yaml`'s prompt templates leave this placeholder
+    unfilled (see that YAML's `prompt` field) — capx's own eval harness only
+    ever fills it via `capx/envs/trial.py`'s `_patch_libero_goal()`, which
+    this workshop backend never calls (it doesn't run trial.py's loop), so
+    without this the WebUI would show participants the literal placeholder
+    string instead of the actual task goal. No-op for Robosuite tasks (their
+    prompts never contain this placeholder, and their low-level env has no
+    `.handle.task_language` to substitute in anyway).
+    """
+    if raw_prompt is None or "{libero_environment_goal}" not in raw_prompt:
+        return raw_prompt
+    low_level = getattr(exec_env, "low_level_env", None)
+    goal = getattr(getattr(low_level, "handle", None), "task_language", None)
+    if not goal:
+        return raw_prompt
+    return raw_prompt.format(libero_environment_goal=goal)
 
 
 class EnvRuntime:
@@ -110,7 +158,7 @@ class EnvRuntime:
         self._cell_counter = 0
         return {
             "frames": _extract_frames(self._env, obs),
-            "task_prompt": info.get("task_prompt"),
+            "task_prompt": _resolve_task_prompt(self._env, info.get("task_prompt")),
             "api_docs": self.api_docs,
         }
 
@@ -169,9 +217,14 @@ class EnvRuntime:
         tasks, "birdview" for nut_assembly, "agentview" for the two-arm
         tasks; see each simulator's `save_camera_name` in
         capx/envs/simulators/*.py), so it must never be hardcoded on the
-        frontend.
+        frontend. `save_camera_name` is Robosuite-only (like
+        `render_camera_names` — see `_extract_frames`); LIBERO tasks fall
+        back to "agentview", the only external camera `_extract_frames`
+        populates for them.
         """
-        return getattr(self._env.low_level_env, "save_camera_name", "robot0_robotview")
+        low_level = self._env.low_level_env
+        default = "agentview" if _is_libero_env(low_level) else "robot0_robotview"
+        return getattr(low_level, "save_camera_name", default)
 
     def replay(self, suffix: str = "combined") -> dict[str, Any]:
         from capx.utils.video_utils import _write_video

@@ -28,8 +28,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Which sandbox worker Docker image a task needs. Robosuite and LIBERO tasks
+# cannot share one image/venv: pyproject.toml's `robosuite` and `libero`
+# extras pin two different, incompatible Robosuite forks and are declared
+# mutually exclusive (`[tool.uv] conflicts`) — see WORKSHOP_LIBERO_ENV.md §1.
+# `session_manager.py` maps this to an actual image tag when starting the
+# container (`WORKER_IMAGES` there); this module only needs to know which
+# bucket a task falls into.
+TaskRuntime = Literal["robosuite", "libero"]
 
 
 @dataclass(frozen=True)
@@ -43,8 +53,16 @@ class TaskSpec:
     # of the capx task class the config_path points at). Hand-translated and
     # not synced automatically — update it when the capx prompt changes. The
     # WebUI shows this by default and lets participants switch to the
-    # English original; None hides the switch.
+    # English original; None hides the switch. LIBERO tasks' goal text is
+    # generated per suite_name/task_id (see env_runtime.py's
+    # `_resolve_task_prompt`), not a fixed class constant, so hand-written
+    # translations aren't practical for every LIBERO task — leave `None`
+    # (English goal only) unless a specific task is worth translating.
     prompt_ja: str | None = None
+    # See `TaskRuntime` above. Defaults to "robosuite" since every task
+    # currently registered below is one; set explicitly to "libero" for any
+    # `env_configs/libero/*.yaml`-backed task.
+    runtime: TaskRuntime = "robosuite"
 
 
 TASKS: list[TaskSpec] = [
@@ -187,6 +205,22 @@ TASKS: list[TaskSpec] = [
             "思考のためにPythonのコードコメントを書いても構いませんが、実行可能なPythonコードのみを書き、コードフェンスで囲まないでください。\n"
             "以下の関数（API）は環境にすでにimportされています。numpyを使う場合は明示的にimportしてください。"
         ),
+    ),
+    TaskSpec(
+        task_id="libero_spatial_0",
+        name="LIBERO: Pick the Bowl (Spatial)",
+        description=(
+            "LIBEROベンチマークのspatialスイート、タスク0です。"
+            "同じ種類の器（ボウル）が複数あり、位置関係（皿とラメキンの間）から"
+            "対象を絞り込む必要があります。Cube系タスクよりオブジェクト認識の"
+            "曖昧さが高く、Perception呼び出しの工夫が要ります。"
+        ),
+        config_path="env_configs/libero/franka_libero_spatial_0.yaml",
+        runtime="libero",
+        # No prompt_ja: the goal text is generated per suite_name/task_id at
+        # runtime (env_runtime.py's `_resolve_task_prompt`), not a fixed
+        # class constant like the Robosuite tasks above — see TaskSpec's
+        # docstring.
     ),
 ]
 

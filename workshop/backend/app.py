@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from typing import Any
 
 import requests
 import websockets
@@ -24,9 +25,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from websockets.asyncio.client import connect as ws_connect
 
+from workshop.backend.agent_loop import AgentLoopRegistry, AgentRunRequest, run_agent_loop
 from workshop.backend.code_extract import extract_code
 from workshop.backend.config import REPO_ROOT, TASKS, get_task, resolve_config_path
 from workshop.backend.llm_client import stream_chat_completion
+from workshop.backend.prompt_render import PromptRenderError, render_template
 from workshop.backend.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,11 @@ class GenerateRequest(BaseModel):
     settings: dict[str, float] = {}
 
 
+class AgentPreviewRequest(BaseModel):
+    template: str
+    variables: dict[str, Any] = {}
+
+
 def _require_session(app: FastAPI, session_id: str) -> SessionManager:
     manager: SessionManager = app.state.manager
     if manager.get(session_id) is None:
@@ -77,6 +85,10 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
     )
 
     app.state.manager = SessionManager(video_root=VIDEO_ROOT, repo_root=REPO_ROOT, gpu_uuids=gpu_uuids)
+    # Tracks in-flight Agent Mode loops' stop requests, keyed by session_id
+    # (see agent_loop.py's AgentLoopRegistry docstring). One shared instance
+    # for the whole process, like app.state.manager.
+    app.state.agent_loops = AgentLoopRegistry()
 
     @app.on_event("startup")
     async def _start_reaper() -> None:
@@ -108,6 +120,20 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             ]
         }
 
+    @app.post("/api/agent/preview")
+    async def agent_preview(request: AgentPreviewRequest) -> dict:
+        """Renders a System/Feedback Prompt template against caller-supplied
+        variables without touching any session or sandbox container — pure
+        Jinja2 rendering (see prompt_render.py). The frontend's template
+        preview (WORKSHOP_AGENT_PLAN.md §2.2) calls this with either dummy
+        placeholder values (before a run has produced anything real) or the
+        real values from the most recently completed turn, entirely as the
+        caller's choice; this endpoint doesn't know or care which."""
+        try:
+            return {"rendered": render_template(request.template, request.variables)}
+        except PromptRenderError as exc:
+            return {"error": str(exc)}
+
     @app.post("/api/sessions")
     async def create_session(request: CreateSessionRequest) -> dict:
         try:
@@ -117,7 +143,7 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
 
         manager: SessionManager = app.state.manager
         try:
-            session = await manager.create_session(task.task_id, resolve_config_path(task))
+            session = await manager.create_session(task.task_id, resolve_config_path(task), task.runtime)
         except Exception as exc:
             logger.exception("Failed to start session for task %s", task.task_id)
             raise HTTPException(status_code=500, detail=str(exc))
@@ -261,6 +287,36 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             yield f"data: {json.dumps({'type': 'done', 'full_text': full_text, 'code': code})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/sessions/{session_id}/agent/run")
+    async def agent_run(session_id: str, request: AgentRunRequest) -> StreamingResponse:
+        """Streams one full Agent Mode run (WORKSHOP_AGENT_PLAN.md §1) as
+        Server-Sent Events — one event per `agent_loop.run_agent_loop()`
+        yield. Unlike `/experiments/generate` above, this endpoint drives
+        the *entire* multi-turn loop itself (reset -> LLM -> code exec ->
+        feedback -> LLM -> ... until a termination condition); the frontend
+        only starts/stops it and renders whatever events arrive.
+        """
+        manager = _require_session(app, session_id)
+        registry: AgentLoopRegistry = app.state.agent_loops
+
+        async def event_stream():
+            async for event in run_agent_loop(manager, registry, session_id, request):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/sessions/{session_id}/agent/stop")
+    async def agent_stop(session_id: str) -> dict:
+        """Requests the in-flight Agent Loop for this session (if any) stop
+        at its next check — between turns, or as soon as the current LLM
+        stream finishes (see run_agent_loop's `registry.should_stop()`
+        checks). Best-effort: a cell already executing (up to the existing
+        180s sandbox timeout) is not interrupted mid-run."""
+        _require_session(app, session_id)
+        registry: AgentLoopRegistry = app.state.agent_loops
+        registry.request_stop(session_id)
+        return {"ok": True}
 
     @app.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str) -> dict:

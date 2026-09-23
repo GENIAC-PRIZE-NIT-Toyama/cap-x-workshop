@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1.7
+#
+# LIBERO variant of workshop/backend/docker/Dockerfile — same sandboxed
+# Session Worker image, but installed with `uv sync --extra libero` instead
+# of `--extra robosuite`. These two extras cannot be merged into one image:
+# pyproject.toml pins two different, incompatible Robosuite forks (one per
+# extra) and declares them mutually exclusive via `[tool.uv] conflicts` — see
+# WORKSHOP_LIBERO_ENV.md §1. `session_manager.py`'s `WORKER_IMAGES` picks
+# this image (tagged `capx-workshop-worker-libero:latest`) for any
+# `TaskSpec(runtime="libero", ...)` in config.py; every other line of
+# session_manager.py's `docker run` invocation (isolation flags, networks,
+# resource limits) is unchanged and shared with the Robosuite image.
+#
+# `capx/third_party/LIBERO-PRO` and `capx/third_party/libero_dependencies`
+# are git submodules (see .gitmodules) — check them out before building,
+# from the repo root:
+#   git submodule update --init capx/third_party/LIBERO-PRO
+#   git submodule update --init capx/third_party/libero_dependencies/robosuite
+#
+# Build from the repo root (this Dockerfile's own .dockerignore excludes
+# everything not needed for the `libero` extra):
+#   docker build -f workshop/backend/docker/Dockerfile.libero -t capx-workshop-worker-libero .
+FROM python:3.10-slim-bookworm
+
+# Same baseline as Dockerfile (see that file's comment for what each package
+# is for) — LIBERO's OffScreenRenderEnv uses the same MuJoCo/EGL offscreen
+# rendering path as Robosuite.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    curl \
+    ca-certificates \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libegl1 \
+    libopengl0 \
+    libglvnd0 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+# Same set of copies as Dockerfile — pyproject.toml declares `capx` itself
+# as the installable project, so the full (dockerignore-filtered) source
+# tree must be present before `uv sync` runs.
+COPY pyproject.toml uv.lock README.md ./
+COPY capx ./capx
+COPY env_configs ./env_configs
+COPY workshop/backend ./workshop/backend
+COPY workshop/__init__.py ./workshop/__init__.py
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --extra libero
+
+# capx/third_party/LIBERO-PRO/libero/libero/__init__.py runs *module-level*
+# first-run setup code the moment anything does `import libero` (this
+# vendored distribution's setup.py sets `package_dir={"": "libero"}`, so the
+# installed top-level `libero` package's actual source IS
+# LIBERO-PRO/libero/libero/ — there is no separate `libero.libero`
+# submodule to import; capx/integrations/libero/__init__.py's own
+# `from libero import ...` imports are the correct spelling, confirmed by
+# `python -c "import libero.libero"` failing with exactly
+# `ModuleNotFoundError: No module named 'libero.libero'` once the real
+# import below succeeds). If `$LIBERO_CONFIG_PATH/config.yaml` (default
+# `~/.libero/config.yaml`) doesn't exist yet, that top-level code blocks on
+# `input("Do you want to specify a custom path for the dataset folder?
+# (Y/N): ")` to create one. That's fine interactively but fatal here — this
+# container has no stdin, and session_manager.py's `docker run` sets
+# `HOME=/tmp`, a *fresh tmpfs mount recreated on every container start*
+# (see that file's `--tmpfs /tmp`), so even if this were answered once,
+# `~/.libero/config.yaml` could never actually persist there across
+# sessions.
+#
+# Fixed by pointing LIBERO_CONFIG_PATH somewhere that isn't wiped
+# (`/app/.libero`, part of this image's own layer, sibling to /app/capx —
+# not under the /tmp tmpfs) and pre-answering the prompt once, at build
+# time, with `echo "n"` (anything but "y" skips the second, path-entry
+# question and just writes LIBERO's own default path dict) — so every
+# session container that starts from this image finds the config file
+# already sitting there and skips the interactive block entirely.
+ENV LIBERO_CONFIG_PATH=/app/.libero
+RUN echo "n" | .venv/bin/python -c "import libero" \
+ && test -f /app/.libero/config.yaml
+
+# Same fix as Dockerfile's, and for the same reason: capx/envs/simulators/
+# libero.py's FrankaLiberoEnv.__init__ calls
+# `load_robot_description("panda_description")` directly (not lazily,
+# unlike Robosuite tasks' pyroki_context — this runs at session *startup*,
+# before /health is ever reachable), which on a cache miss `git clone`s
+# github.com/Gepetto/example-robot-data. The session container's network
+# has no route to the internet (session_manager.py's module docstring), so
+# warm the cache here at build time instead, into a path that survives
+# `docker run`'s `HOME=/tmp` (a fresh, empty tmpfs on every container start
+# — see that file's `--tmpfs /tmp`) because it isn't HOME-relative.
+ENV ROBOT_DESCRIPTIONS_CACHE=/app/.cache/robot_descriptions
+RUN .venv/bin/python -c "from robot_descriptions.loaders.yourdfpy import load_robot_description; load_robot_description('panda_description')" \
+ && test -d /app/.cache/robot_descriptions/example-robot-data
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+EXPOSE 8500
+
+ENTRYPOINT ["python", "-m", "workshop.backend.worker_server"]

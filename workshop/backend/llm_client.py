@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from typing import Any
 
 from openai import OpenAI
 
@@ -35,8 +36,18 @@ def _model_name() -> str:
     return os.environ.get("WORKSHOP_VLLM_MODEL", DEFAULT_MODEL)
 
 
-def stream_chat_completion(messages: list[dict[str, str]], settings: dict[str, float]) -> Iterator[str]:
+def stream_chat_completion(messages: list[dict[str, Any]], settings: dict[str, float]) -> Iterator[str]:
     """Yields content deltas from the vLLM chat completion stream.
+
+    `messages` is forwarded as-is to `chat.completions.create` — each
+    message's `content` may be a plain string (every caller before Agent
+    Mode) or, for Agent Mode with vision enabled (see agent_loop.py's
+    `_to_content()`), the OpenAI multipart form
+    `[{"type": "text", ...}, {"type": "image_url", ...}]`. This function
+    itself doesn't need to know which; it's just forwarded through to
+    whatever vLLM-served model is on the other end (a vision-capable model
+    is required for the multipart form to actually work — that's a
+    deployment concern, not something this function validates).
 
     `settings` is forwarded as-is as extra keyword args to
     `chat.completions.create` (e.g. `{"temperature": 0.7}`) so new generation

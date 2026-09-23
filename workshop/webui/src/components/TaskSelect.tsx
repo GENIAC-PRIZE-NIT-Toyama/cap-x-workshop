@@ -42,8 +42,13 @@ function TaskGrid({
 }
 
 function notebookMeta(nb: Notebook, taskName: string): string {
-  const count = nb.mode === "prompt" ? `${nb.experiments?.length ?? 0}実験` : `${nb.cells.length}セル`;
-  const modeLabel = nb.mode === "prompt" ? "プロンプト" : "手動";
+  const count =
+    nb.mode === "prompt"
+      ? `${nb.experiments?.length ?? 0}実験`
+      : nb.mode === "agent"
+        ? `${nb.agentResult?.turns.length ?? 0}ターン`
+        : `${nb.cells.length}セル`;
+  const modeLabel = nb.mode === "prompt" ? "プロンプト" : nb.mode === "agent" ? "Agent" : "手動";
   return `${taskName} ・ ${modeLabel} ・ ${new Date(nb.updatedAt).toLocaleString()} ・ ${count}`;
 }
 
@@ -54,7 +59,7 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
   const [notebooks, setNotebooks] = useState<Notebook[]>(() => listNotebooks());
   const [mode, setMode] = useState<NotebookMode>(() => {
     const saved = localStorage.getItem("defaultNotebookMode") as NotebookMode | null;
-    if (saved === "prompt" || saved === "manual") return saved;
+    if (saved === "prompt" || saved === "manual" || saved === "agent") return saved;
     return listNotebooks()[0]?.mode ?? "manual";
   });
 
@@ -145,6 +150,16 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
         >
           プロンプトモード
           <small>LLMにプロンプトを与えてコードを生成させる</small>
+        </button>
+        <button
+          type="button"
+          className={mode === "agent" ? "mode-btn active" : "mode-btn"}
+          aria-pressed={mode === "agent"}
+          disabled={busy}
+          onClick={() => setMode("agent")}
+        >
+          Agentモード
+          <small>System/Feedback Promptを設計し、LLMに試行錯誤(ReAct)させる</small>
         </button>
       </div>
 

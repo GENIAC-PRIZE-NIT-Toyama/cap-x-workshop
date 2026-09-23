@@ -69,7 +69,17 @@ IDLE_TIMEOUT_SECONDS = 30 * 60
 READY_TIMEOUT_SECONDS = 180
 HEALTH_POLL_INTERVAL_SECONDS = 1.0
 
-WORKER_IMAGE = "capx-workshop-worker:latest"
+# One image per TaskSpec.runtime (config.py) — Robosuite and LIBERO tasks
+# cannot share a worker image/venv (see config.py's `TaskRuntime` docstring
+# and WORKSHOP_LIBERO_ENV.md §1). `create_session()` selects one of these by
+# the `runtime` argument its caller (app.py) passes in from the task's
+# TaskSpec. The "libero" image is built from a separate Dockerfile
+# (workshop/backend/docker/Dockerfile.libero) that `uv sync --extra libero`s
+# instead of `--extra robosuite` — see that Dockerfile's own docstring.
+WORKER_IMAGES: dict[str, str] = {
+    "robosuite": "capx-workshop-worker:latest",
+    "libero": "capx-workshop-worker-libero:latest",
+}
 CONTAINER_PORT = 8500
 
 # Shared network every worker container is created on, solely so its port can
@@ -175,7 +185,14 @@ class SessionManager:
                 raise RuntimeError(f"docker network create ({IO_NETWORK}) failed: {err.strip()}")
         self._io_network_ready = True
 
-    async def create_session(self, task_id: str, config_path: str) -> Session:
+    async def create_session(self, task_id: str, config_path: str, runtime: str = "robosuite") -> Session:
+        try:
+            worker_image = WORKER_IMAGES[runtime]
+        except KeyError:
+            raise ValueError(
+                f"Unknown task runtime {runtime!r}; expected one of {sorted(WORKER_IMAGES)}"
+            ) from None
+
         session_id = uuid.uuid4().hex[:12]
         container_name = f"capx-ws-{session_id}"
         network_name = f"capx-ws-net-{session_id}"
@@ -283,7 +300,7 @@ class SessionManager:
             for env_var, (proxy_name, proxy_port) in PROXY_CONTAINERS.items():
                 cmd += ["-e", f"{env_var}=http://{proxy_name}:{proxy_port}"]
             cmd += [
-                WORKER_IMAGE,
+                worker_image,
                 "--config-path",
                 container_config_path,
                 "--video-dir",
@@ -310,8 +327,9 @@ class SessionManager:
             raise
 
         logger.info(
-            "Session %s ready (container=%s network=%s port=%s)",
+            "Session %s ready (runtime=%s container=%s network=%s port=%s)",
             session_id,
+            runtime,
             container_name,
             network_name,
             host_port,

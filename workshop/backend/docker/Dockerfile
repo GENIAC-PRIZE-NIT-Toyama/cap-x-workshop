@@ -61,12 +61,35 @@ COPY workshop/__init__.py ./workshop/__init__.py
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra robosuite
 
+# capx/integrations/motion/pyroki_context.py resolves the Panda arm's URDF
+# via `robot_descriptions.loaders.yourdfpy.load_robot_description
+# ("panda_description")`, which on a cache miss `git clone`s
+# github.com/Gepetto/example-robot-data (see robot_descriptions/_cache.py's
+# `clone_to_cache()`) into `$ROBOT_DESCRIPTIONS_CACHE` (default
+# `~/.cache/robot_descriptions`). Any API call that goes through pyroki
+# (goto_pose, sample_grasp_pose, ...) touches this — i.e. effectively every
+# task — so it needs to be a cache *hit* by the time a session container
+# runs: that container's network is `internal: true` with a route to
+# nothing but the three fixed Perception API proxies (session_manager.py's
+# module docstring), so a clone attempted at runtime would just hang/fail.
+# Fixed the same way as Dockerfile.libero's LIBERO config bootstrap: warm
+# the cache once here, at build time (when this image still has ordinary
+# internet access), into a path outside the container's `/tmp` (which
+# `docker run --tmpfs /tmp` in session_manager.py replaces with an empty
+# mount on every session, wiping anything cached under the default
+# `~/.cache` once HOME is repointed there below).
+ENV ROBOT_DESCRIPTIONS_CACHE=/app/.cache/robot_descriptions
+RUN .venv/bin/python -c "from robot_descriptions.loaders.yourdfpy import load_robot_description; load_robot_description('panda_description')" \
+ && test -d /app/.cache/robot_descriptions/example-robot-data
+
 # Everything that might try to write a cache/config file under "~" (mujoco,
 # fontconfig, matplotlib, robosuite's private macros, etc.) should land in
 # the container's tmpfs (see `docker run --tmpfs /tmp` in session_manager.py)
 # rather than accumulate in the image's own writable layer for no reason.
 # Pointing HOME at /tmp covers all of them without enumerating each
-# library's own env var.
+# library's own env var. ROBOT_DESCRIPTIONS_CACHE (set above) and
+# LIBERO_CONFIG_PATH (Dockerfile.libero) are deliberately *not* HOME-relative
+# for exactly this reason — they need to survive HOME being replaced.
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp \
