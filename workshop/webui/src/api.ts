@@ -283,3 +283,90 @@ export function previewAgentPrompt(
     body: JSON.stringify({ template, variables }),
   });
 }
+
+// ---------------------------------------------------------------------
+// Generalization test (backend/eval_runner.py): one Agent config run against
+// several tasks of a suite, one after another; each task's run is streamed
+// as the same events a single Agent run emits, wrapped in `job_event`.
+// ---------------------------------------------------------------------
+
+export interface EvalSuite {
+  suite_id: string;
+  name: string;
+  description: string;
+  default_task_ids: string[];
+  tasks: { task_id: string; name: string }[];
+}
+
+export type EvalStatus = AgentLoopStatus | "skipped";
+
+export type EvalSSEEvent =
+  | { type: "eval_start"; eval_id: string; jobs: { job_id: string; task_id: string; name: string }[] }
+  | { type: "job_boot"; job_id: string }
+  | { type: "job_start"; job_id: string; session_id: string }
+  | { type: "job_event"; job_id: string; event: AgentSSEEvent }
+  | { type: "job_done"; job_id: string; success: boolean; status: EvalStatus; detail: string | null }
+  | { type: "eval_done"; stopped: boolean };
+
+export function listEvalSuites(): Promise<{ suites: EvalSuite[] }> {
+  return request("/api/eval/suites");
+}
+
+export async function runEval(
+  body: {
+    suite_id: string;
+    task_ids: string[];
+    reuse: { task_id: string; session_id: string } | null;
+    config: AgentConfig;
+  },
+  onEvent: (event: EvalSSEEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const prompt = activePrompt(body.config);
+  const res = await fetch("/api/eval/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      suite_id: body.suite_id,
+      task_ids: body.task_ids,
+      reuse: body.reuse,
+      agent: {
+        system_prompt: prompt.systemPrompt,
+        feedback_prompt: prompt.feedbackPrompt,
+        vision_enabled: body.config.visionEnabled,
+        termination_mode: body.config.terminationMode,
+        max_turns: body.config.maxTurns,
+        settings: body.config.settings,
+      },
+    }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const payload = frame.startsWith("data: ") ? frame.slice(6) : frame;
+        if (payload) onEvent(JSON.parse(payload) as EvalSSEEvent);
+      }
+    }
+  } catch (err: unknown) {
+    if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) return;
+    throw err;
+  }
+}
+
+export function stopEval(evalId: string): Promise<Response> {
+  return fetch(`/api/eval/${evalId}/stop`, { method: "POST" });
+}

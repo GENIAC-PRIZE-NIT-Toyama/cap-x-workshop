@@ -27,7 +27,8 @@ from websockets.asyncio.client import connect as ws_connect
 
 from workshop.backend.agent_loop import AgentLoopRegistry, AgentRunRequest, run_agent_loop
 from workshop.backend.code_extract import extract_code
-from workshop.backend.config import REPO_ROOT, TASKS, get_task, resolve_config_path
+from workshop.backend.config import REPO_ROOT, SUITES, TASKS, get_suite, get_task, resolve_config_path
+from workshop.backend.eval_runner import EvalRegistry, EvalRunRequest, run_eval
 from workshop.backend.llm_client import stream_chat_completion
 from workshop.backend.prompt_render import PromptRenderError, render_template
 from workshop.backend.session_manager import SessionManager
@@ -89,6 +90,7 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
     # (see agent_loop.py's AgentLoopRegistry docstring). One shared instance
     # for the whole process, like app.state.manager.
     app.state.agent_loops = AgentLoopRegistry()
+    app.state.evals = EvalRegistry()
 
     @app.on_event("startup")
     async def _start_reaper() -> None:
@@ -117,6 +119,7 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
                     "featured": t.featured,
                 }
                 for t in TASKS
+                if t.listed
             ]
         }
 
@@ -320,6 +323,41 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
         _require_session(app, session_id)
         registry: AgentLoopRegistry = app.state.agent_loops
         registry.request_stop(session_id)
+        return {"ok": True}
+
+    @app.get("/api/eval/suites")
+    async def list_eval_suites() -> dict:
+        return {
+            "suites": [
+                {
+                    **{k: v for k, v in suite.items() if k not in ("task_ids", "default_task_ids")},
+                    "default_task_ids": suite["default_task_ids"],
+                    "tasks": [{"task_id": tid, "name": get_task(tid).name} for tid in suite["task_ids"]],
+                }
+                for suite in SUITES
+            ]
+        }
+
+    @app.post("/api/eval/run")
+    async def eval_run(request: EvalRunRequest) -> StreamingResponse:
+        """Streams a multi-task evaluation (eval_runner.py) as SSE. Closing
+        the connection cancels the evaluation and tears down its sessions."""
+        try:
+            get_suite(request.suite_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown suite_id: {request.suite_id}")
+
+        async def event_stream():
+            async for event in run_eval(app.state.manager, app.state.agent_loops, app.state.evals, request):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/eval/{eval_id}/stop")
+    async def eval_stop(eval_id: str) -> dict:
+        if not app.state.evals.exists(eval_id):
+            raise HTTPException(status_code=404, detail="Evaluation not found")
+        app.state.evals.request_stop(eval_id, app.state.agent_loops)
         return {"ok": True}
 
     @app.post("/api/sessions/{session_id}/reset")

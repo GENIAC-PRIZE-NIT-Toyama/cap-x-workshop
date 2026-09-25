@@ -63,7 +63,28 @@ class TaskSpec:
     # currently registered below is one; set explicitly to "libero" for any
     # `env_configs/libero/*.yaml`-backed task.
     runtime: TaskRuntime = "robosuite"
+    # False hides the task from the task-selection grid (it is still a valid
+    # task_id, e.g. as a member of an evaluation suite).
+    listed: bool = True
 
+
+# libero_object tasks, in LIBERO's task order (index = task index): (English
+# name, Japanese name of the object).
+LIBERO_OBJECT_TASKS = [
+    ("Alphabet Soup", "アルファベットスープ缶"),
+    ("Cream Cheese", "クリームチーズ"),
+    ("Salad Dressing", "サラダドレッシング"),
+    ("BBQ Sauce", "BBQソース"),
+    ("Ketchup", "ケチャップ"),
+    ("Tomato Sauce", "トマトソース"),
+    ("Butter", "バター"),
+    ("Milk", "牛乳"),
+    ("Chocolate Pudding", "チョコレートプリン"),
+    ("Orange Juice", "オレンジジュース"),
+]
+# Pre-selected in the generalization test: three differently-shaped objects
+# are enough to judge whether a prompt generalizes.
+LIBERO_OBJECT_DEFAULT = [0, 1, 4]
 
 TASKS: list[TaskSpec] = [
     TaskSpec(
@@ -222,19 +243,41 @@ TASKS: list[TaskSpec] = [
         # class constant like the Robosuite tasks above — see TaskSpec's
         # docstring.
     ),
+] + [
     TaskSpec(
-        task_id="libero_object_0",
-        name="LIBERO: Alphabet Soup into Basket (Object)",
+        task_id=f"libero_object_{i}",
+        name=f"LIBERO: {name_en} into Basket (Object)",
         description=(
-            "LIBEROベンチマークのobjectスイート、タスク0です。"
-            "テーブル上のアルファベットスープ缶をつかんでバスケットに入れます。"
+            f"LIBEROベンチマークのobjectスイート、タスク{i}です。"
+            f"テーブル上の{name_ja}をつかんでバスケットに入れます。"
             "対象物は1つの名前で特定でき、位置関係の絞り込みが要らないため、"
             "LIBEROの中では易しめです。物体認識→把持→移動の基本の流れを練習できます。"
         ),
-        config_path="env_configs/libero/franka_libero_object_0.yaml",
+        config_path=f"env_configs/libero/franka_libero_object_{i}.yaml",
         runtime="libero",
-    ),
+        listed=(i == 0),
+    )
+    for i, (name_en, name_ja) in enumerate(LIBERO_OBJECT_TASKS)
 ]
+
+# Evaluation suites (Agent Mode's "generalization test"): a named group of
+# tasks run with one prompt, scored as successes / total.
+SUITES: list[dict] = [
+    {
+        "suite_id": "libero_object",
+        "name": "LIBERO-Object",
+        "description": "テーブル上の物体を1つずつバスケットに入れるスイート。",
+        "task_ids": [f"libero_object_{i}" for i in range(len(LIBERO_OBJECT_TASKS))],
+        "default_task_ids": [f"libero_object_{i}" for i in LIBERO_OBJECT_DEFAULT],
+    },
+]
+
+
+def get_suite(suite_id: str) -> dict:
+    for suite in SUITES:
+        if suite["suite_id"] == suite_id:
+            return suite
+    raise KeyError(suite_id)
 
 
 def get_task(task_id: str) -> TaskSpec:

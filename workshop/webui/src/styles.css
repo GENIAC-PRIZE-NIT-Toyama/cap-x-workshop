@@ -1568,3 +1568,26 @@ pre {
 .agent-prompt-section { margin-bottom: 10px; }
 
 .agent-perception-images .agent-chat-image-wrap img { max-width: 240px; max-height: 180px; object-fit: contain; }
+
+/* Generalization test (Agent Mode) */
+.eval-strip { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-alt); padding: 10px 12px; margin-bottom: 14px; }
+.eval-strip-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.eval-strip-title { font-weight: 600; font-size: 0.9rem; }
+.eval-strip-spacer { flex: 1; }
+.eval-score { font-size: 1.8rem; font-weight: 700; line-height: 1; color: var(--primary); }
+.eval-score-den { font-size: 1.1rem; color: var(--text-muted); font-weight: 500; }
+.eval-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.eval-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 0.82rem; }
+.eval-chip.viewed { outline: 2px solid var(--primary); }
+.eval-chip.running { border-color: var(--primary); color: var(--primary); }
+.eval-chip.running .eval-chip-icon { animation: eval-pulse 1s infinite; }
+.eval-chip.success { border-color: #2e9e5b; color: #2e9e5b; font-weight: 600; }
+.eval-chip.fail, .eval-chip.error { border-color: #d9534f; color: #d9534f; }
+.eval-chip.pending, .eval-chip.skipped { color: var(--text-muted); }
+@keyframes eval-pulse { 50% { opacity: 0.25; } }
+.eval-launch { margin-bottom: 12px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--radius-md); }
+.eval-launch summary { cursor: pointer; font-weight: 600; font-size: 0.88rem; }
+.eval-task-picker { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.eval-pick { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.8rem; cursor: pointer; background: var(--surface-alt); }
+.eval-pick.on { border-color: var(--primary); color: var(--primary); }
+.eval-pick input { margin: 0; }

@@ -8,11 +8,16 @@ import {
   createSession,
   fetchReplayUrl,
   resetSession,
+  listEvalSuites,
   runAgentLoop,
   runCell,
+  runEval,
   stopAgentLoop,
+  stopEval,
   streamGenerate,
   streamUrl,
+  type EvalSSEEvent,
+  type EvalSuite,
 } from "./api";
 import TaskSelect from "./components/TaskSelect";
 import CameraView from "./components/CameraView";
@@ -30,6 +35,8 @@ import AgentSessionSettings from "./components/AgentSessionSettings";
 import AgentPromptEditor from "./components/AgentPromptEditor";
 import PromptVersionSelect from "./components/PromptVersionSelect";
 import AgentTrajectoryView from "./components/AgentTrajectoryView";
+import EvalStrip, { shortTaskName, type EvalJobState } from "./components/EvalStrip";
+import { applyAgentEvent, emptyRunView } from "./agentEvents";
 import AgentRunControls from "./components/AgentRunControls";
 import { buildTrajectoryText, downloadBlobUrl, downloadText, exportTimestamp } from "./exportTrajectory";
 import {
@@ -206,6 +213,43 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const agentAbortRef = useRef<AbortController | null>(null);
 
+  // Generalization test: the same Agent config run over several tasks (see
+  // eval_runner.py). Each task's run is kept as its own AgentRunView; the
+  // chat below shows the running task live, or whichever chip was clicked.
+  const [evalSuite, setEvalSuite] = useState<EvalSuite | null>(null);
+  const [evalSelected, setEvalSelected] = useState<Set<string>>(new Set());
+  const [evalActive, setEvalActive] = useState(false);
+  const [evalJobs, setEvalJobs] = useState<EvalJobState[]>([]);
+  const [evalRunning, setEvalRunning] = useState(false);
+  const [evalStopping, setEvalStopping] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
+  const [evalViewId, setEvalViewId] = useState<string | null>(null); // null = follow the running task
+  const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
+  const evalIdRef = useRef<string | null>(null);
+  const evalAbortRef = useRef<AbortController | null>(null);
+
+  const evalFollowId =
+    evalJobs.find((j) => j.state === "running" || j.state === "booting")?.jobId ??
+    [...evalJobs].reverse().find((j) => j.state === "done")?.jobId ??
+    evalJobs[0]?.jobId ??
+    null;
+  const evalViewedId = evalViewId ?? evalFollowId;
+  const shownJob = evalActive ? (evalJobs.find((j) => j.jobId === evalViewedId) ?? null) : null;
+  const shownTurns = evalActive ? (shownJob?.view.turns ?? []) : agentTurns;
+  const shownLive = evalActive ? (shownJob?.view.live ?? null) : agentLiveTurn;
+  const shownFinal = evalActive ? (shownJob?.view.final ?? null) : agentFinalStatus;
+
+  useEffect(() => {
+    if (mode !== "agent" || evalSuite) return;
+    listEvalSuites()
+      .then((res) => {
+        const suite = res.suites[0] ?? null;
+        setEvalSuite(suite);
+        if (suite) setEvalSelected(new Set(suite.default_task_ids));
+      })
+      .catch(() => {});
+  }, [mode, evalSuite]);
+
   // Follow the output while a run streams in, unless the participant has
   // scrolled up (re-enabled once they scroll back to the bottom or start a
   // new run).
@@ -217,10 +261,10 @@ export default function App() {
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   }, []);
   useEffect(() => {
-    if (mode !== "agent" || !agentRunning || !stickToBottomRef.current) return;
+    if (mode !== "agent" || !(agentRunning || evalRunning) || !stickToBottomRef.current) return;
     const el = editorPaneRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [mode, agentRunning, agentLiveTurn, agentTurns]);
+  }, [mode, agentRunning, evalRunning, shownLive, shownTurns]);
   // Mirrors agentLiveTurn synchronously (kept up to date by handleAgentStart's
   // onEvent, not by an effect) so that handler's own turn_done branch can
   // read this turn's input_text/input_frames without going stale — onEvent
@@ -239,8 +283,9 @@ export default function App() {
   // mid-motion ones — while a cell is running, not just the single
   // before/after snapshot the cell's own HTTP response carries.
   useEffect(() => {
-    if (!session) return;
-    const url = streamUrl(session.sessionId);
+    const streamId = streamSessionId ?? session?.sessionId;
+    if (!streamId) return;
+    const url = streamUrl(streamId);
     const ws = new WebSocket(url);
     ws.onmessage = (event) => {
       // {"camera": "...", "image": "<base64>"} — the camera key varies per
@@ -257,7 +302,7 @@ export default function App() {
       }
     };
     return () => ws.close();
-  }, [session?.sessionId]);
+  }, [session?.sessionId, streamSessionId]);
 
   // Clears Agent Mode's run state — used whenever a session starts/ends
   // (handleStartNew/handleOpenNotebook/handleEndSession), regardless of
@@ -273,6 +318,15 @@ export default function App() {
     setAgentFinalStatus(null);
     setAgentStopping(false);
     setAgentRunInfo(null);
+    evalAbortRef.current?.abort();
+    evalAbortRef.current = null;
+    setEvalActive(false);
+    setEvalJobs([]);
+    setEvalRunning(false);
+    setEvalStopping(false);
+    setEvalError(null);
+    setEvalViewId(null);
+    setStreamSessionId(null);
   }, []);
 
   const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode) => {
@@ -851,6 +905,91 @@ export default function App() {
     stopAgentLoop(session.sessionId).catch(() => {});
   }, [session]);
 
+  const handleEvalStart = useCallback(async () => {
+    if (!session || !evalSuite || agentRunning || evalRunning || evalSelected.size === 0) return;
+    setEvalActive(true);
+    setEvalJobs([]);
+    setEvalViewId(null);
+    setEvalError(null);
+    setEvalRunning(true);
+    setEvalStopping(false);
+    stickToBottomRef.current = true;
+    activeRunFramesRef.current = [];
+    setReplayFrames([]);
+    setActiveCamera("robot0_robotview");
+
+    const controller = new AbortController();
+    evalAbortRef.current = controller;
+    const patchJob = (jobId: string, fn: (j: EvalJobState) => EvalJobState) =>
+      setEvalJobs((prev) => prev.map((j) => (j.jobId === jobId ? fn(j) : j)));
+
+    const onEvent = (ev: EvalSSEEvent) => {
+      if (ev.type === "eval_start") {
+        evalIdRef.current = ev.eval_id;
+        setEvalJobs(
+          ev.jobs.map((j) => ({
+            jobId: j.job_id,
+            taskId: j.task_id,
+            name: j.name,
+            state: "pending" as const,
+            sessionId: null,
+            success: false,
+            status: null,
+            detail: null,
+            view: emptyRunView(),
+          })),
+        );
+      } else if (ev.type === "job_boot") {
+        patchJob(ev.job_id, (j) => ({ ...j, state: "booting" }));
+      } else if (ev.type === "job_start") {
+        setStreamSessionId(ev.session_id);
+        patchJob(ev.job_id, (j) => ({ ...j, state: "running", sessionId: ev.session_id }));
+      } else if (ev.type === "job_event") {
+        patchJob(ev.job_id, (j) => ({ ...j, view: applyAgentEvent(j.view, ev.event) }));
+      } else if (ev.type === "job_done") {
+        patchJob(ev.job_id, (j) => ({ ...j, state: "done", success: ev.success, status: ev.status, detail: ev.detail }));
+      }
+    };
+
+    try {
+      await runEval(
+        {
+          suite_id: evalSuite.suite_id,
+          task_ids: evalSuite.tasks.filter((t) => evalSelected.has(t.task_id)).map((t) => t.task_id),
+          reuse: { task_id: session.taskId, session_id: session.sessionId },
+          config: agentConfig,
+        },
+        onEvent,
+        controller.signal,
+      );
+    } catch (err) {
+      setEvalError(String(err));
+    } finally {
+      // Whatever ended the stream, no task stays "running".
+      setEvalJobs((prev) =>
+        prev.map((j) =>
+          j.state === "done" ? j : { ...j, state: "done", status: j.status ?? "error", detail: j.detail ?? "中断されました" },
+        ),
+      );
+      setEvalRunning(false);
+      setEvalStopping(false);
+      setStreamSessionId(null);
+      evalIdRef.current = null;
+      if (evalAbortRef.current === controller) evalAbortRef.current = null;
+    }
+  }, [session, evalSuite, evalSelected, agentRunning, evalRunning, agentConfig]);
+
+  const handleEvalStop = useCallback(() => {
+    if (!evalIdRef.current) return;
+    setEvalStopping(true);
+    stopEval(evalIdRef.current).catch(() => {});
+  }, []);
+
+  const handleEvalSelectJob = useCallback(
+    (jobId: string) => setEvalViewId(jobId === evalFollowId && evalRunning ? null : jobId),
+    [evalFollowId, evalRunning],
+  );
+
   // Export = Trajectory (.txt) + replay video (.mp4), both named by the
   // export time (MMDDHHMMSS).
   const handleExport = useCallback(async () => {
@@ -955,7 +1094,7 @@ export default function App() {
         onSaveReplay={handleSaveReplay}
         onEndSession={handleEndSession}
         onShowDocs={() => setDocsVisible(true)}
-        resetting={resetting || agentRunning}
+        resetting={resetting || agentRunning || evalRunning}
         savingReplay={savingReplay}
       />
       <ApiDocsModal visible={docsVisible} docs={session.apiDocs} theme={theme} onClose={() => setDocsVisible(false)} />
@@ -1048,7 +1187,9 @@ export default function App() {
               <div className="editor-header">
                 <span className="editor-title">Agent Mode</span>
                 <span className="editor-title">
-                  {agentRunning
+                  {evalActive
+                    ? `汎化テスト: ${evalJobs.filter((j) => j.state === "done").length}/${evalJobs.length} タスク終了`
+                    : agentRunning
                     ? `${agentLiveTurn?.phase === "executing" ? "コード実行中" : "生成中"}(ターン ${agentLiveTurn?.turn ?? agentTurns.length} / ${agentConfig.maxTurns})`
                     : `完了ターン数: ${agentTurns.length}`}
                 </span>
@@ -1068,12 +1209,47 @@ export default function App() {
                   maxTurns={agentConfig.maxTurns}
                   onStart={handleAgentStart}
                   onStop={handleAgentStop}
-                  disabled={resetting}
+                  disabled={resetting || evalRunning}
                   onExport={handleExport}
-                  canExport={agentTurns.length > 0}
+                  canExport={agentTurns.length > 0 && !evalRunning}
                   exporting={exporting}
                 />
               </div>
+              {evalSuite && (
+                <details className="eval-launch">
+                  <summary>汎化テスト(同じプロンプトを複数タスクで試す)</summary>
+                  <p className="muted">{evalSuite.name}: 上で選んだプロンプト・設定のまま、選んだタスクを順番に実行して成功数を数えます。</p>
+                  <div className="eval-task-picker">
+                    {evalSuite.tasks.map((t) => (
+                      <label key={t.task_id} className={evalSelected.has(t.task_id) ? "eval-pick on" : "eval-pick"}>
+                        <input
+                          type="checkbox"
+                          checked={evalSelected.has(t.task_id)}
+                          disabled={evalRunning}
+                          onChange={() =>
+                            setEvalSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(t.task_id)) next.delete(t.task_id);
+                              else next.add(t.task_id);
+                              return next;
+                            })
+                          }
+                        />
+                        {shortTaskName(t.name)}
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="run-btn"
+                    onClick={handleEvalStart}
+                    disabled={agentRunning || evalRunning || evalSelected.size === 0}
+                  >
+                    ▶ {evalSelected.size}タスクで実行
+                  </button>
+                  <small className="muted"> 各タスクは順番に、専用の環境で実行されます(このセッションのタスクはこの環境を使います)。</small>
+                </details>
+              )}
               <details className="agent-settings-toggle">
                 <summary>セッション設定(画像入力・終了条件・max turns)</summary>
                 <AgentSessionSettings config={agentConfig} onChange={setAgentConfig} disabled={agentRunning} />
@@ -1089,7 +1265,24 @@ export default function App() {
                   lastStderr={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stderr : null}
                 />
               </div>
-              <AgentTrajectoryView turns={agentTurns} liveTurn={agentLiveTurn} finalStatus={agentFinalStatus} />
+              {evalActive && (
+                <EvalStrip
+                  jobs={evalJobs}
+                  viewedId={evalViewedId}
+                  running={evalRunning}
+                  stopping={evalStopping}
+                  onSelect={handleEvalSelectJob}
+                  onStop={handleEvalStop}
+                  onClose={() => {
+                    setEvalActive(false);
+                    setEvalJobs([]);
+                    setEvalViewId(null);
+                    setEvalError(null);
+                  }}
+                />
+              )}
+              {evalError && <p className="error">{evalError}</p>}
+              <AgentTrajectoryView turns={shownTurns} liveTurn={shownLive} finalStatus={shownFinal} />
             </>
           )}
         </div>
