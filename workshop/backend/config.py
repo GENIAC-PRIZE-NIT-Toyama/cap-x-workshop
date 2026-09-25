@@ -28,8 +28,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Which sandbox worker Docker image a task needs. Robosuite and LIBERO tasks
+# cannot share one image/venv: pyproject.toml's `robosuite` and `libero`
+# extras pin two different, incompatible Robosuite forks and are declared
+# mutually exclusive (`[tool.uv] conflicts`) — see WORKSHOP_LIBERO_ENV.md §1.
+# `session_manager.py` maps this to an actual image tag when starting the
+# container (`WORKER_IMAGES` there); this module only needs to know which
+# bucket a task falls into.
+TaskRuntime = Literal["robosuite", "libero"]
 
 
 @dataclass(frozen=True)
@@ -43,9 +53,38 @@ class TaskSpec:
     # of the capx task class the config_path points at). Hand-translated and
     # not synced automatically — update it when the capx prompt changes. The
     # WebUI shows this by default and lets participants switch to the
-    # English original; None hides the switch.
+    # English original; None hides the switch. LIBERO tasks' goal text is
+    # generated per suite_name/task_id (see env_runtime.py's
+    # `_resolve_task_prompt`), not a fixed class constant, so hand-written
+    # translations aren't practical for every LIBERO task — leave `None`
+    # (English goal only) unless a specific task is worth translating.
     prompt_ja: str | None = None
+    # See `TaskRuntime` above. Defaults to "robosuite" since every task
+    # currently registered below is one; set explicitly to "libero" for any
+    # `env_configs/libero/*.yaml`-backed task.
+    runtime: TaskRuntime = "robosuite"
+    # False hides the task from the task-selection grid (it is still a valid
+    # task_id, e.g. as a member of an evaluation suite).
+    listed: bool = True
 
+
+# libero_object tasks, in LIBERO's task order (index = task index): (English
+# name, Japanese name of the object).
+LIBERO_OBJECT_TASKS = [
+    ("Alphabet Soup", "アルファベットスープ缶"),
+    ("Cream Cheese", "クリームチーズ"),
+    ("Salad Dressing", "サラダドレッシング"),
+    ("BBQ Sauce", "BBQソース"),
+    ("Ketchup", "ケチャップ"),
+    ("Tomato Sauce", "トマトソース"),
+    ("Butter", "バター"),
+    ("Milk", "牛乳"),
+    ("Chocolate Pudding", "チョコレートプリン"),
+    ("Orange Juice", "オレンジジュース"),
+]
+# Pre-selected in the generalization test: three differently-shaped objects
+# are enough to judge whether a prompt generalizes.
+LIBERO_OBJECT_DEFAULT = [0, 1, 4]
 
 TASKS: list[TaskSpec] = [
     TaskSpec(
@@ -188,7 +227,71 @@ TASKS: list[TaskSpec] = [
             "以下の関数（API）は環境にすでにimportされています。numpyを使う場合は明示的にimportしてください。"
         ),
     ),
+    TaskSpec(
+        task_id="libero_spatial_0",
+        name="LIBERO: Pick the Bowl (Spatial)",
+        description=(
+            "LIBEROベンチマークのspatialスイート、タスク0です。"
+            "同じ種類の器（ボウル）が複数あり、位置関係（皿とラメキンの間）から"
+            "対象を絞り込む必要があります。Cube系タスクよりオブジェクト認識の"
+            "曖昧さが高く、Perception呼び出しの工夫が要ります。"
+        ),
+        config_path="env_configs/libero/franka_libero_spatial_0.yaml",
+        runtime="libero",
+        # No prompt_ja: the goal text is generated per suite_name/task_id at
+        # runtime (env_runtime.py's `_resolve_task_prompt`), not a fixed
+        # class constant like the Robosuite tasks above — see TaskSpec's
+        # docstring.
+    ),
+] + [
+    TaskSpec(
+        task_id=f"libero_object_{i}",
+        name=f"LIBERO: {name_en} into Basket (Object)",
+        description=(
+            f"LIBEROベンチマークのobjectスイート、タスク{i}です。"
+            f"テーブル上の{name_ja}をつかんでバスケットに入れます。"
+            "対象物は1つの名前で特定でき、位置関係の絞り込みが要らないため、"
+            "LIBEROの中では易しめです。物体認識→把持→移動の基本の流れを練習できます。"
+        ),
+        config_path=f"env_configs/libero/franka_libero_object_{i}.yaml",
+        runtime="libero",
+        listed=(i == 0),
+    )
+    for i, (name_en, name_ja) in enumerate(LIBERO_OBJECT_TASKS)
 ]
+
+# Evaluation suites (Agent Mode's "generalization test"): a named group of
+# tasks run with one prompt, scored as successes / total.
+SUITES: list[dict] = [
+    {
+        "suite_id": "robosuite",
+        "name": "Robosuite",
+        "description": "Cube Stack / Cube Restack / Spill Wipe / Two-Arm Handover の4タスク。積む・入れ替える・拭く・受け渡すと、動作の種類が異なるタスクで汎化を試します。",
+        "task_ids": ["cube_stack", "cube_restack", "spill_wipe", "two_arm_handover"],
+        "default_task_ids": ["cube_stack", "cube_restack", "spill_wipe", "two_arm_handover"],
+    },
+    {
+        "suite_id": "libero_object",
+        "name": "LIBERO-Object",
+        "description": "テーブル上の物体(缶・箱・ボトルなど)を1つずつバスケットに入れる10タスク。最初は3タスクを選択しています。",
+        "task_ids": [f"libero_object_{i}" for i in range(len(LIBERO_OBJECT_TASKS))],
+        "default_task_ids": [f"libero_object_{i}" for i in LIBERO_OBJECT_DEFAULT],
+    },
+    {
+        "suite_id": "libero_spatial",
+        "name": "LIBERO-Spatial",
+        "description": "同じ種類のボウルが複数あり、位置関係(皿とラメキンの間など)から対象を絞り込むタスク。",
+        "task_ids": ["libero_spatial_0"],
+        "default_task_ids": ["libero_spatial_0"],
+    },
+]
+
+
+def get_suite(suite_id: str) -> dict:
+    for suite in SUITES:
+        if suite["suite_id"] == suite_id:
+            return suite
+    raise KeyError(suite_id)
 
 
 def get_task(task_id: str) -> TaskSpec:

@@ -565,6 +565,13 @@ pre {
   min-height: 0;
 }
 
+/* Agent Mode has no third (Perception) pane — Perception steps render
+   inline per-turn in the chat view instead (AgentTrajectoryView.tsx) — so
+   the camera pane and the chat pane just split the width two ways. */
+.main-panes-agent {
+  grid-template-columns: minmax(280px, 1fr) minmax(420px, 2fr);
+}
+
 .pane {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1154,6 +1161,279 @@ pre {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Agent Mode                                                             */
+/* ---------------------------------------------------------------------- */
+
+.agent-run-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.agent-run-status {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.agent-config {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
+}
+
+.agent-config-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-config-row-inline {
+  flex-direction: row;
+  gap: 20px;
+}
+
+.agent-config-row-inline label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.agent-config-row-inline input[type="number"] {
+  width: 90px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.agent-config-label {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 0.88rem;
+}
+
+.agent-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-radio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.agent-radio small {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 0.78rem;
+}
+
+.agent-template-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-template-textarea {
+  min-height: 140px;
+  /* No max-height on purpose — grown to fit content by the useLayoutEffect
+     in AgentConfigPanel.tsx, never clamped/scrolled internally. */
+  overflow-y: hidden;
+  resize: none;
+}
+
+.agent-preview-output {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.agent-preview-output.error {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-tint);
+}
+
+.agent-trajectory-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+/* Chat-like trajectory view (AgentTrajectoryView.tsx) — one .agent-chat-turn
+   per turn, read top-to-bottom, nothing collapsed behind a <details>. */
+.agent-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.agent-chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-chat-turn-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.agent-chat-bubble {
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+}
+
+.agent-chat-bubble-role {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+/* "user" = what was sent to the LLM this turn */
+.agent-chat-bubble-user {
+  background: var(--surface-alt);
+  margin-right: 8%;
+}
+
+/* "assistant" = the model's own response (narrative + code) */
+.agent-chat-bubble-assistant {
+  background: var(--primary-tint);
+  margin-left: 8%;
+}
+
+/* execution result — visually distinct from both message bubbles, sits
+   directly under the assistant bubble it belongs to */
+.agent-chat-bubble-result {
+  background: var(--surface);
+  margin-left: 8%;
+}
+
+.agent-chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.agent-chat-code {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.agent-chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.agent-chat-image-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.agent-chat-image-wrap img {
+  max-width: 220px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.agent-chat-image-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.agent-chat-perception {
+  margin-top: 10px;
+}
+
+.agent-chat-subhead {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.agent-perception-step {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
+.agent-perception-step.highlight {
+  border-left-color: var(--accent, var(--success));
+}
+
+.agent-final-status {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--success-tint);
+  color: var(--success);
+  font-size: 0.85rem;
+}
+
+.agent-final-status p {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.agent-final-status.error {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Responsive                                                             */
 /* ---------------------------------------------------------------------- */
 
@@ -1166,3 +1446,151 @@ pre {
     height: auto;
   }
 }
+/* Perception steps inside the Agent chat: same look as the manual-mode
+   Perception view, images small and side by side. */
+.perception-step.compact {
+  padding: 6px 10px;
+  margin-top: 6px;
+}
+
+.perception-step.compact .perception-step-images {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.perception-step.compact .perception-step-images img {
+  width: auto;
+  max-width: 150px;
+  max-height: 110px;
+  object-fit: contain;
+}
+
+/* Prompt version dropdown + collapsible settings */
+.agent-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.agent-toolbar-row .agent-run-controls {
+  margin-bottom: 0;
+}
+
+.prompt-version-select {
+  position: relative;
+}
+
+.prompt-version-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-version-caption {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.prompt-version-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.prompt-version-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.prompt-version-item:hover {
+  background: var(--surface-alt);
+}
+
+.prompt-version-item.active {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.prompt-version-add {
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  color: var(--primary);
+}
+
+.agent-settings-toggle {
+  margin-bottom: 10px;
+}
+
+.agent-settings-toggle > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.agent-settings-toggle[open] > summary {
+  margin-bottom: 6px;
+}
+
+.prompt-version-meta {
+  align-items: flex-end;
+}
+
+.prompt-version-meta input[type="text"] {
+  width: 200px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.agent-prompt-section { margin-bottom: 10px; }
+
+.agent-perception-images .agent-chat-image-wrap img { max-width: 240px; max-height: 180px; object-fit: contain; }
+
+/* Generalization test (Agent Mode) */
+.eval-strip { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-alt); padding: 10px 12px; margin-bottom: 14px; }
+.eval-strip-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.eval-strip-title { font-weight: 600; font-size: 0.9rem; }
+.eval-strip-spacer { flex: 1; }
+.eval-score { font-size: 1.8rem; font-weight: 700; line-height: 1; color: var(--primary); }
+.eval-score-den { font-size: 1.1rem; color: var(--text-muted); font-weight: 500; }
+.eval-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.eval-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 0.82rem; }
+.eval-chip.viewed { outline: 2px solid var(--primary); }
+.eval-chip.running { border-color: var(--primary); color: var(--primary); }
+.eval-chip.running .eval-chip-icon { animation: eval-pulse 1s infinite; }
+.eval-chip.success { border-color: #2e9e5b; color: #2e9e5b; font-weight: 600; }
+.eval-chip.fail, .eval-chip.error { border-color: #d9534f; color: #d9534f; }
+.eval-chip.pending, .eval-chip.skipped { color: var(--text-muted); }
+@keyframes eval-pulse { 50% { opacity: 0.25; } }
+.eval-launch { margin-bottom: 12px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--radius-md); }
+.eval-launch summary { cursor: pointer; font-weight: 600; font-size: 0.88rem; }
+.eval-task-picker { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.eval-pick { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.8rem; cursor: pointer; background: var(--surface-alt); }
+.eval-pick.on { border-color: var(--primary); color: var(--primary); }
+.eval-pick input { margin: 0; }
+
+.task-switch { display: inline-flex; align-items: center; gap: 8px; }
+.task-switch select { padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--text); }

@@ -8,6 +8,12 @@ export GRASPNET_SERVICE_URL=http://127.0.0.1:8115
 export PYROKI_SERVICE_URL=http://127.0.0.1:8116
 export SAM2_SERVICE_URL=http://127.0.0.1:8113
 export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
+# Molmo (capx/integrations/vision/molmo.py) — a pointing/grounding VLM
+# FrankaLiberoApi falls back to when SAM3's text-prompted segmentation
+# finds nothing for a query. Served directly via vLLM like the workshop
+# reasoning LLM below, no dedicated capx server launcher.
+export MOLMO_SERVICE_URL=http://127.0.0.1:8122/v1
+export MOLMO_MODEL=allenai/Molmo2-8B
 
 # workshop/backend's prompt-engineering mode (llm_client.py) — a local,
 # OpenAI-compatible vLLM server it talks to directly over the LAN. Only this
@@ -15,6 +21,11 @@ export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
 export WORKSHOP_VLLM_BASE_URL=http://127.0.0.1:8000/v1
 export WORKSHOP_VLLM_MODEL=default
 # export WORKSHOP_VLLM_API_KEY=  # optional; vLLM ignores it by default
+
+# Model name sent to Molmo by sandboxed session containers (read by
+# workshop/backend/session_manager.py). The Molmo server address itself is
+# MOLMO_UPSTREAM in workshop/docker/.env (perception-proxy-molmo).
+export WORKSHOP_VLLM_MOLMO2_MODEL=allenai/Molmo2-8B
 
 # api_servers[] in env_configs YAML no longer carry host/port; the
 # *_SERVICE_URL vars above are the single source of truth for where each

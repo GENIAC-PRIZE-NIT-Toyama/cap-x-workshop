@@ -5,14 +5,14 @@
 # 1. cloudflared — publishes the backend (localhost:8200) to the internet.
 #
 # 2. perception-proxy-* — dumb, fixed-destination TCP relays to the real
-#    SAM3/GraspNet/PyRoKi hosts (see WORKSHOP_ENDPOINT.md). They always
+#    SAM3/GraspNet/PyRoKi/Molmo hosts (see WORKSHOP_ENDPOINT.md). They always
 #    forward to the same hardcoded upstream, so they cannot be used for
 #    SSRF/exfiltration no matter what a sandboxed session sends them.
 #
 #    Each participant session gets its own per-session Docker network
 #    created by workshop/backend/session_manager.py with `internal: true`
 #    (no route to the internet or LAN at all), and session_manager.py
-#    connects these three proxy containers onto that network at session
+#    connects these four proxy containers onto that network at session
 #    start (and disconnects them at session end). That means a sandboxed
 #    session container can reach the Perception API *and nothing else* — not
 #    the internet, not the LAN, not the Docker host, and not other
@@ -48,4 +48,12 @@ services:
     image: alpine/socat
     container_name: capx-workshop-proxy-pyroki
     command: ["tcp-listen:8116,fork,reuseaddr", "tcp:${PYROKI_UPSTREAM:-192.168.0.200:8116}"]
+    restart: unless-stopped
+
+  # Molmo is a vLLM (OpenAI-compatible) server, not a capx server — no
+  # entry in WORKSHOP_ENDPOINT.md. Point MOLMO_UPSTREAM at wherever it runs.
+  perception-proxy-molmo:
+    image: alpine/socat
+    container_name: capx-workshop-proxy-molmo
+    command: ["tcp-listen:8122,fork,reuseaddr", "tcp:${MOLMO_UPSTREAM:-192.168.0.31:8000}"]
     restart: unless-stopped

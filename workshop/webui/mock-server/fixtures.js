@@ -330,6 +330,33 @@ goto_pose(grasp_pos + np.array([0.0, 0.0, 0.1]), grasp_quat)
 \`\`\`
 `;
 
+// Canned Agent Mode trajectory (WORKSHOP_AGENT_PLAN.md) — a 3-turn run: two
+// turns that emit a code block, then a third with no fenced block at all,
+// which is what makes the mock loop end with status "agent_finished" (see
+// server.js's agentRun(), mirroring agent_loop.py's extract_last_code_block()
+// returning None).
+export const AGENT_TURN_RESPONSES = [
+  `${MOCK}ターン1: まず対象物の姿勢を取得し、上から掴みに行きます。
+
+\`\`\`python
+grasp_pos, grasp_quat = sample_grasp_pose("red cube")
+open_gripper()
+goto_pose(grasp_pos, grasp_quat, z_approach=0.1)
+close_gripper()
+\`\`\`
+`,
+  `${MOCK}ターン2: 持ち上げて、Perceptionで高さを確認します。
+
+\`\`\`python
+import numpy as np
+pos, quat, extent = get_object_pose("red cube", return_bbox_extent=True)
+goto_pose(pos + np.array([0.0, 0.0, 0.15]), quat)
+print("current height:", pos[2])
+\`\`\`
+`,
+  `${MOCK}stdoutを見る限り、キューブは十分な高さまで持ち上げられています。タスクは完了したと判断しました。これ以上のコードは不要です。`,
+];
+
 export const GENERATE_RESPONSE_LONG = [
   `${MOCK}This is a long canned response from the mock backend, not an LLM.`,
   "",

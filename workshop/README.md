@@ -34,6 +34,13 @@ git submodule update --init capx/third_party/sam3 capx/third_party/robosuite
 # 2. Build the sandboxed worker image (from the repo root).
 docker build -f workshop/backend/docker/Dockerfile -t capx-workshop-worker:latest .
 
+# 2b. Only if config.py registers any TaskSpec(runtime="libero", ...) —
+#     build the separate LIBERO worker image too (see
+#     workshop/backend/docker/Dockerfile.libero's docstring for why this
+#     can't just be `--extra libero` added to the image above).
+git submodule update --init capx/third_party/LIBERO-PRO capx/third_party/libero_dependencies/robosuite
+docker build -f workshop/backend/docker/Dockerfile.libero -t capx-workshop-worker-libero:latest .
+
 # 3. Start the always-on infra: Cloudflare Tunnel + Perception API proxies.
 cd workshop/docker
 cp .env.example .env   # fill in CLOUDFLARE_TUNNEL_TOKEN from the Cloudflare dashboard

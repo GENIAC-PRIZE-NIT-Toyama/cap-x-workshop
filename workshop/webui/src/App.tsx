@@ -2,14 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMonaco } from "@monaco-editor/react";
 import { parseApiDocs } from "./apiDocs";
 import {
+  type AgentSSEEvent,
   type ChatMessage,
   closeSession,
   createSession,
   fetchReplayUrl,
   resetSession,
+  listEvalSuites,
+  runAgentLoop,
   runCell,
+  runEval,
+  stopAgentLoop,
+  stopEval,
   streamGenerate,
   streamUrl,
+  type EvalSSEEvent,
+  type EvalSuite,
 } from "./api";
 import TaskSelect from "./components/TaskSelect";
 import CameraView from "./components/CameraView";
@@ -23,9 +31,25 @@ import PromptExperimentPanel, {
   type ExperimentUiState,
   type TurnRunState,
 } from "./components/PromptExperimentPanel";
+import AgentSessionSettings from "./components/AgentSessionSettings";
+import AgentPromptEditor from "./components/AgentPromptEditor";
+import PromptVersionSelect from "./components/PromptVersionSelect";
+import AgentTrajectoryView from "./components/AgentTrajectoryView";
+import EvalStrip, { shortTaskName, type EvalJobState } from "./components/EvalStrip";
+import { applyAgentEvent, emptyRunView } from "./agentEvents";
+import AgentRunControls from "./components/AgentRunControls";
+import { buildTrajectoryText, downloadBlobUrl, downloadText, exportTimestamp } from "./exportTrajectory";
 import {
+  activePrompt,
+  defaultAgentConfig,
   newNotebookId,
+  newPromptVersion,
+  normalizeAgentConfig,
   saveNotebook,
+  type AgentConfig,
+  type AgentRunInfo,
+  type AgentLoopStatus,
+  type AgentTurnEvent,
   type GenerationSettings,
   type Notebook,
   type NotebookMode,
@@ -67,6 +91,9 @@ function withFreshId(exp: PromptExperiment): PromptExperiment {
 interface SessionInfo {
   sessionId: string;
   taskId: string;
+  // Agent-mode notebooks are started from a suite (its tasks are what the
+  // generalization test runs); null for the other modes.
+  suiteId: string | null;
   taskPrompt: string | null;
   taskPromptJa: string | null;
   apiDocs: string;
@@ -166,12 +193,112 @@ export default function App() {
   const [replayFrames, setReplayFrames] = useState<{ camera: string; image: string }[]>([]);
   const [activeCamera, setActiveCamera] = useState<string>("robot0_robotview");
 
+  // Agent Mode (mode === "agent") — see WORKSHOP_AGENT_PLAN.md §2. Kept
+  // separate from the "manual"/"prompt" state above rather than folded into
+  // it: the loop is driven server-side (agent_loop.py), so this is mostly
+  // just an append-only render of the SSE events runAgentLoop() delivers,
+  // not editable turn-by-turn state the way `cells`/`experiments` are.
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => defaultAgentConfig());
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentTurns, setAgentTurns] = useState<AgentTurnEvent[]>([]);
+  const [agentLiveTurn, setAgentLiveTurn] = useState<{
+    turn: number;
+    inputText: string;
+    inputFrames: Record<string, string> | null;
+    text: string;
+    phase: "generating" | "executing";
+  } | null>(null);
+  const [agentFinalStatus, setAgentFinalStatus] = useState<{ status: AgentLoopStatus; detail: string | null } | null>(
+    null,
+  );
+  const [agentStopping, setAgentStopping] = useState(false);
+  const [agentRunInfo, setAgentRunInfo] = useState<AgentRunInfo | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const agentAbortRef = useRef<AbortController | null>(null);
+
+  // Generalization test: the same Agent config run over several tasks (see
+  // eval_runner.py). Each task's run is kept as its own AgentRunView; the
+  // chat below shows the running task live, or whichever chip was clicked.
+  const [evalSuites, setEvalSuites] = useState<EvalSuite[]>([]);
+  const [evalSelected, setEvalSelected] = useState<Set<string>>(new Set());
+  const [evalActive, setEvalActive] = useState(false);
+  const [evalJobs, setEvalJobs] = useState<EvalJobState[]>([]);
+  const [evalRunning, setEvalRunning] = useState(false);
+  const [evalStopping, setEvalStopping] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
+  const [evalViewId, setEvalViewId] = useState<string | null>(null); // null = follow the running task
+  const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
+  const evalIdRef = useRef<string | null>(null);
+  const evalAbortRef = useRef<AbortController | null>(null);
+
+  const evalFollowId =
+    evalJobs.find((j) => j.state === "running" || j.state === "booting")?.jobId ??
+    [...evalJobs].reverse().find((j) => j.state === "done")?.jobId ??
+    evalJobs[0]?.jobId ??
+    null;
+  const evalViewedId = evalViewId ?? evalFollowId;
+  const shownJob = evalActive ? (evalJobs.find((j) => j.jobId === evalViewedId) ?? null) : null;
+  const shownTurns = evalActive ? (shownJob?.view.turns ?? []) : agentTurns;
+  const shownLive = evalActive ? (shownJob?.view.live ?? null) : agentLiveTurn;
+  const shownFinal = evalActive ? (shownJob?.view.final ?? null) : agentFinalStatus;
+
+  // The suite this notebook was started from (or, for older notebooks, the
+  // one containing its task).
+  const evalSuite =
+    evalSuites.find((x) => x.suite_id === session?.suiteId) ??
+    evalSuites.find((x) => x.tasks.some((t) => t.task_id === session?.taskId)) ??
+    evalSuites[0] ??
+    null;
+  const evalSuiteId = evalSuite?.suite_id;
+
+  useEffect(() => {
+    if (mode !== "agent" || evalSuites.length > 0) return;
+    listEvalSuites()
+      .then((res) => setEvalSuites(res.suites))
+      .catch(() => {});
+  }, [mode, evalSuites.length]);
+
+  useEffect(() => {
+    if (evalSuite) setEvalSelected(new Set(evalSuite.default_task_ids));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evalSuiteId]);
+
+  // Follow the output while a run streams in, unless the participant has
+  // scrolled up (re-enabled once they scroll back to the bottom or start a
+  // new run).
+  const editorPaneRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const handleEditorScroll = useCallback(() => {
+    const el = editorPaneRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }, []);
+  useEffect(() => {
+    if (mode !== "agent" || !(agentRunning || evalRunning) || !stickToBottomRef.current) return;
+    const el = editorPaneRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [mode, agentRunning, evalRunning, shownLive, shownTurns]);
+  // Mirrors agentLiveTurn synchronously (kept up to date by handleAgentStart's
+  // onEvent, not by an effect) so that handler's own turn_done branch can
+  // read this turn's input_text/input_frames without going stale — onEvent
+  // is one long-lived closure for the whole run, so reading React state
+  // (agentLiveTurn) directly inside it would only ever see the value from
+  // the render that created the closure, not the latest one.
+  const agentLiveTurnRef = useRef<{
+    turn: number;
+    inputText: string;
+    inputFrames: Record<string, string> | null;
+    text: string;
+    phase: "generating" | "executing";
+  } | null>(null);
+
   // Live camera feed: pushes every newly-recorded frame — including
   // mid-motion ones — while a cell is running, not just the single
   // before/after snapshot the cell's own HTTP response carries.
   useEffect(() => {
-    if (!session) return;
-    const url = streamUrl(session.sessionId);
+    const streamId = streamSessionId ?? session?.sessionId;
+    if (!streamId) return;
+    const url = streamUrl(streamId);
     const ws = new WebSocket(url);
     ws.onmessage = (event) => {
       // {"camera": "...", "image": "<base64>"} — the camera key varies per
@@ -188,9 +315,34 @@ export default function App() {
       }
     };
     return () => ws.close();
-  }, [session?.sessionId]);
+  }, [session?.sessionId, streamSessionId]);
 
-  const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode) => {
+  // Clears Agent Mode's run state — used whenever a session starts/ends
+  // (handleStartNew/handleOpenNotebook/handleEndSession), regardless of
+  // which mode the new session is in, so a leftover trajectory from a
+  // previous agent session never bleeds into the next one.
+  const resetAgentState = useCallback(() => {
+    agentAbortRef.current?.abort();
+    agentAbortRef.current = null;
+    agentLiveTurnRef.current = null;
+    setAgentRunning(false);
+    setAgentTurns([]);
+    setAgentLiveTurn(null);
+    setAgentFinalStatus(null);
+    setAgentStopping(false);
+    setAgentRunInfo(null);
+    evalAbortRef.current?.abort();
+    evalAbortRef.current = null;
+    setEvalActive(false);
+    setEvalJobs([]);
+    setEvalRunning(false);
+    setEvalStopping(false);
+    setEvalError(null);
+    setEvalViewId(null);
+    setStreamSessionId(null);
+  }, []);
+
+  const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode, suiteId?: string) => {
     setStarting(true);
     setStartError(null);
     try {
@@ -198,6 +350,7 @@ export default function App() {
       setSession({
         sessionId: res.session_id,
         taskId: res.task_id,
+        suiteId: suiteId ?? null,
         taskPrompt: res.task_prompt,
         taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
@@ -208,6 +361,7 @@ export default function App() {
       setPerceptionSteps([]);
       activeRunFramesRef.current = [];
       setReplayFrames([]);
+      resetAgentState();
       const id = newNotebookId();
       setNotebookId(id);
       setNotebookName(name);
@@ -226,6 +380,13 @@ export default function App() {
           experiments: [exp],
           updatedAt: new Date().toISOString(),
         });
+      } else if (notebookMode === "agent") {
+        const config = defaultAgentConfig();
+        setCells([newCell()]);
+        setExperiments([]);
+        setExpUi({});
+        setAgentConfig(config);
+        saveNotebook({ id, name, taskId, suiteId, mode: "agent", cells: [], agentConfig: config, updatedAt: new Date().toISOString() });
       } else {
         setCells([newCell()]);
         setExperiments([]);
@@ -237,7 +398,7 @@ export default function App() {
     } finally {
       setStarting(false);
     }
-  }, []);
+  }, [resetAgentState]);
 
   const handleOpenNotebook = useCallback(async (notebook: Notebook) => {
     setStarting(true);
@@ -247,6 +408,7 @@ export default function App() {
       setSession({
         sessionId: res.session_id,
         taskId: res.task_id,
+        suiteId: notebook.suiteId ?? null,
         taskPrompt: res.task_prompt,
         taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
@@ -259,6 +421,7 @@ export default function App() {
       setReplayFrames([]);
       setNotebookId(notebook.id);
       setNotebookName(notebook.name);
+      resetAgentState();
 
       if (notebook.mode === "prompt") {
         const exps =
@@ -268,6 +431,25 @@ export default function App() {
         setExperiments(exps);
         setExpUi(Object.fromEntries(exps.map((e) => [e.id, newExperimentUiState()])));
         setCells([newCell()]);
+      } else if (notebook.mode === "agent") {
+        setAgentConfig(normalizeAgentConfig(notebook.agentConfig));
+        setAgentRunInfo(notebook.agentResult?.runInfo ?? null);
+        // Notebooks saved before the chat-view redesign lack inputText/
+        // perceptionSteps; default them so the view never dereferences undefined.
+        setAgentTurns(
+          (notebook.agentResult?.turns ?? []).map((t) => ({
+            ...t,
+            inputText: t.inputText ?? "",
+            inputFrames: t.inputFrames ?? null,
+            perceptionSteps: t.perceptionSteps ?? [],
+          })),
+        );
+        setAgentFinalStatus(
+          notebook.agentResult ? { status: notebook.agentResult.status, detail: notebook.agentResult.detail } : null,
+        );
+        setCells([newCell()]);
+        setExperiments([]);
+        setExpUi({});
       } else {
         setCells(notebook.cells.length > 0 ? notebook.cells.map((code) => newCell(code)) : [newCell()]);
         setExperiments([]);
@@ -278,13 +460,15 @@ export default function App() {
     } finally {
       setStarting(false);
     }
-  }, []);
+  }, [resetAgentState]);
 
   // Auto-save the notebook to the browser as it's edited, debounced so
   // typing doesn't hit localStorage on every keystroke. Manual-mode
   // notebooks persist code only (unchanged); prompt-mode notebooks persist
   // prompts/LLM responses/code/stdout-stderr per notebooks.ts's Notebook
-  // shape — never frames/video/perception_steps.
+  // shape; agent-mode notebooks persist the two templates/toggles plus the
+  // most recently completed run's trajectory (text only) — never
+  // frames/video/perception_steps in any mode.
   useEffect(() => {
     if (!notebookId || !session) return;
     const timeout = setTimeout(() => {
@@ -292,14 +476,33 @@ export default function App() {
         id: notebookId,
         name: notebookName,
         taskId: session.taskId,
+        suiteId: session.suiteId ?? undefined,
         mode,
         cells: mode === "manual" ? cells.map((c) => c.code) : [],
         experiments: mode === "prompt" ? experiments : undefined,
+        agentConfig: mode === "agent" ? agentConfig : undefined,
+        // Images (inputFrames, perceptionSteps[].images) are stripped here,
+        // not carried at all in the persisted copy — same "never persist
+        // images" policy as PromptTurn.lastRun. The live agentTurns state
+        // (used for on-screen rendering) keeps them.
+        agentResult:
+          mode === "agent" && agentFinalStatus
+            ? {
+                status: agentFinalStatus.status,
+                detail: agentFinalStatus.detail,
+                runInfo: agentRunInfo ?? undefined,
+                turns: agentTurns.map((t) => ({
+                  ...t,
+                  inputFrames: null,
+                  perceptionSteps: t.perceptionSteps.map((s) => ({ ...s, images: [] })),
+                })),
+              }
+            : undefined,
         updatedAt: new Date().toISOString(),
       });
     }, 500);
     return () => clearTimeout(timeout);
-  }, [cells, experiments, mode, notebookId, notebookName, session]);
+  }, [agentConfig, agentFinalStatus, agentRunInfo, agentTurns, cells, experiments, mode, notebookId, notebookName, session]);
 
   const updateCell = useCallback((id: string, patch: Partial<CellState>) => {
     setCells((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -590,6 +793,294 @@ export default function App() {
     );
   }, []);
 
+  // ------------------------------------------------------------------
+  // Agent Mode: starts/stops the server-orchestrated loop
+  // (agent_loop.py) and appends each SSE event it streams back into
+  // agentTurns/agentLiveTurn/agentFinalStatus. Unlike prompt mode's
+  // handleGenerate+handleResetAndRunExperiment pair, there is only one
+  // handler for the whole run — the backend drives turn progression, code
+  // execution and feedback itself.
+  // ------------------------------------------------------------------
+
+  const handleAgentStart = useCallback(async () => {
+    if (!session || agentRunning) return;
+    setAgentTurns([]);
+    agentLiveTurnRef.current = null;
+    setAgentLiveTurn(null);
+    setAgentFinalStatus(null);
+    activeRunFramesRef.current = [];
+    setReplayFrames([]);
+    setAgentRunning(true);
+    setAgentStopping(false);
+    stickToBottomRef.current = true;
+    const prompt = activePrompt(agentConfig);
+    setAgentRunInfo({
+      startedAt: new Date().toISOString(),
+      promptName: prompt.name,
+      systemPrompt: prompt.systemPrompt,
+      feedbackPrompt: prompt.feedbackPrompt,
+      visionEnabled: agentConfig.visionEnabled,
+      terminationMode: agentConfig.terminationMode,
+      maxTurns: agentConfig.maxTurns,
+      temperature: agentConfig.settings.temperature,
+    });
+
+    const controller = new AbortController();
+    agentAbortRef.current = controller;
+
+    const onEvent = (event: AgentSSEEvent) => {
+      if (event.type === "turn_start") {
+        const next = { turn: event.turn, inputText: event.input_text, inputFrames: event.input_frames, text: "", phase: "generating" as const };
+        agentLiveTurnRef.current = next;
+        setAgentLiveTurn(next);
+      } else if (event.type === "llm_delta") {
+        setAgentLiveTurn((prev) => {
+          if (!prev || prev.turn !== event.turn) return prev;
+          const next = { ...prev, text: prev.text + event.text };
+          agentLiveTurnRef.current = next;
+          return next;
+        });
+      } else if (event.type === "exec_start") {
+        setAgentLiveTurn((prev) => {
+          if (!prev || prev.turn !== event.turn) return prev;
+          const next = { ...prev, phase: "executing" as const };
+          agentLiveTurnRef.current = next;
+          return next;
+        });
+      } else if (event.type === "turn_done") {
+        const inputSnapshot = agentLiveTurnRef.current;
+        agentLiveTurnRef.current = null;
+        setAgentLiveTurn(null);
+        setAgentTurns((prev) => [
+          ...prev,
+          {
+            turn: event.turn,
+            inputText: inputSnapshot?.turn === event.turn ? inputSnapshot.inputText : "",
+            inputFrames: inputSnapshot?.turn === event.turn ? inputSnapshot.inputFrames : null,
+            llmRaw: event.llm_raw,
+            code: event.code,
+            stdout: event.stdout,
+            stderr: event.stderr,
+            taskCompleted: event.task_completed,
+            perceptionSteps: event.perception_steps,
+          },
+        ]);
+        // Perception debug images (SAM3/GraspNet/PyRoKi) surface right
+        // below this turn's result in AgentTrajectoryView, not in a
+        // separate global panel — see App.tsx's agent-mode render branch,
+        // which skips <PerceptionPanel> entirely. The live camera frame
+        // still updates via the existing /stream websocket below,
+        // unaffected by any of this.
+      } else if (event.type === "loop_done") {
+        // A turn that was still streaming when the loop ended (LLM error,
+        // stop) never got a turn_done — keep what was generated so far.
+        const partial = agentLiveTurnRef.current;
+        if (partial && partial.text) {
+          setAgentTurns((prev) => [
+            ...prev,
+            {
+              turn: partial.turn,
+              inputText: partial.inputText,
+              inputFrames: partial.inputFrames,
+              llmRaw: partial.text,
+              code: null,
+              stdout: "",
+              stderr: "",
+              taskCompleted: null,
+              perceptionSteps: [],
+            },
+          ]);
+        }
+        agentLiveTurnRef.current = null;
+        setAgentLiveTurn(null);
+        setAgentFinalStatus({ status: event.status, detail: event.detail });
+        setAgentRunning(false);
+        setAgentStopping(false);
+      }
+    };
+
+    try {
+      await runAgentLoop(session.sessionId, agentConfig, onEvent, controller.signal);
+    } catch (err) {
+      setAgentFinalStatus({ status: "error", detail: String(err) });
+    } finally {
+      setAgentRunning(false);
+      setAgentStopping(false);
+      if (agentAbortRef.current === controller) agentAbortRef.current = null;
+    }
+  }, [agentConfig, agentRunning, session]);
+
+  const handleAgentStop = useCallback(() => {
+    if (!session) return;
+    // Ask the backend to end the loop on its own terms (agent_loop.py
+    // checks this between/after turns) — this does not sever the SSE
+    // stream itself, which keeps running until the backend's own
+    // `loop_done` event closes it, so the trajectory view still receives
+    // whatever turn was already in flight.
+    setAgentStopping(true);
+    stopAgentLoop(session.sessionId).catch(() => {});
+  }, [session]);
+
+  const handleEvalStart = useCallback(async () => {
+    if (!session || !evalSuite || agentRunning || evalRunning || evalSelected.size === 0) return;
+    setEvalActive(true);
+    setEvalJobs([]);
+    setEvalViewId(null);
+    setEvalError(null);
+    setEvalRunning(true);
+    setEvalStopping(false);
+    stickToBottomRef.current = true;
+    activeRunFramesRef.current = [];
+    setReplayFrames([]);
+    setActiveCamera("robot0_robotview");
+
+    const controller = new AbortController();
+    evalAbortRef.current = controller;
+    const patchJob = (jobId: string, fn: (j: EvalJobState) => EvalJobState) =>
+      setEvalJobs((prev) => prev.map((j) => (j.jobId === jobId ? fn(j) : j)));
+
+    const onEvent = (ev: EvalSSEEvent) => {
+      if (ev.type === "eval_start") {
+        evalIdRef.current = ev.eval_id;
+        setEvalJobs(
+          ev.jobs.map((j) => ({
+            jobId: j.job_id,
+            taskId: j.task_id,
+            name: j.name,
+            state: "pending" as const,
+            sessionId: null,
+            success: false,
+            status: null,
+            detail: null,
+            view: emptyRunView(),
+          })),
+        );
+      } else if (ev.type === "job_boot") {
+        patchJob(ev.job_id, (j) => ({ ...j, state: "booting" }));
+      } else if (ev.type === "job_start") {
+        setStreamSessionId(ev.session_id);
+        patchJob(ev.job_id, (j) => ({ ...j, state: "running", sessionId: ev.session_id }));
+      } else if (ev.type === "job_event") {
+        patchJob(ev.job_id, (j) => ({ ...j, view: applyAgentEvent(j.view, ev.event) }));
+      } else if (ev.type === "job_done") {
+        patchJob(ev.job_id, (j) => ({ ...j, state: "done", success: ev.success, status: ev.status, detail: ev.detail }));
+      }
+    };
+
+    try {
+      await runEval(
+        {
+          suite_id: evalSuite.suite_id,
+          task_ids: evalSuite.tasks.filter((t) => evalSelected.has(t.task_id)).map((t) => t.task_id),
+          reuse: { task_id: session.taskId, session_id: session.sessionId },
+          config: agentConfig,
+        },
+        onEvent,
+        controller.signal,
+      );
+    } catch (err) {
+      setEvalError(String(err));
+    } finally {
+      // Whatever ended the stream, no task stays "running".
+      setEvalJobs((prev) =>
+        prev.map((j) =>
+          j.state === "done" ? j : { ...j, state: "done", status: j.status ?? "error", detail: j.detail ?? "中断されました" },
+        ),
+      );
+      setEvalRunning(false);
+      setEvalStopping(false);
+      setStreamSessionId(null);
+      evalIdRef.current = null;
+      if (evalAbortRef.current === controller) evalAbortRef.current = null;
+    }
+  }, [session, evalSuite, evalSelected, agentRunning, evalRunning, agentConfig]);
+
+  const handleEvalStop = useCallback(() => {
+    if (!evalIdRef.current) return;
+    setEvalStopping(true);
+    stopEval(evalIdRef.current).catch(() => {});
+  }, []);
+
+  // Switch the notebook to another task of its suite: a fresh sandbox on the
+  // new task, the old one closed. Prompts/settings are kept; the previous
+  // task's trajectory is cleared.
+  const [switchingTask, setSwitchingTask] = useState(false);
+  const handleSwitchTask = useCallback(
+    async (taskId: string) => {
+      if (!session || taskId === session.taskId || agentRunning || evalRunning || switchingTask) return;
+      setSwitchingTask(true);
+      try {
+        const res = await createSession(taskId);
+        const oldSessionId = session.sessionId;
+        resetAgentState();
+        setSession({
+          sessionId: res.session_id,
+          taskId: res.task_id,
+          suiteId: session.suiteId,
+          taskPrompt: res.task_prompt,
+          taskPromptJa: res.task_prompt_ja,
+          apiDocs: res.api_docs,
+        });
+        setFrames(res.frames);
+        setPerceptionSteps([]);
+        activeRunFramesRef.current = [];
+        setReplayFrames([]);
+        setActiveCamera("robot0_robotview");
+        closeSession(oldSessionId).catch(() => {});
+      } catch (err) {
+        alert(`タスクの切り替えに失敗しました: ${err}`);
+      } finally {
+        setSwitchingTask(false);
+      }
+    },
+    [session, agentRunning, evalRunning, switchingTask, resetAgentState],
+  );
+
+  const handleEvalSelectJob = useCallback(
+    (jobId: string) => setEvalViewId(jobId === evalFollowId && evalRunning ? null : jobId),
+    [evalFollowId, evalRunning],
+  );
+
+  // Export = Trajectory (.txt) + replay video (.mp4), both named by the
+  // export time (MMDDHHMMSS).
+  const handleExport = useCallback(async () => {
+    if (!session) return;
+    setExporting(true);
+    const stamp = exportTimestamp();
+    try {
+      downloadText(
+        buildTrajectoryText({
+          taskId: session.taskId,
+          notebookName,
+          runInfo: agentRunInfo,
+          turns: agentTurns,
+          status: agentFinalStatus,
+        }),
+        `${stamp}.txt`,
+      );
+      try {
+        if (replayUrlRef.current) URL.revokeObjectURL(replayUrlRef.current);
+        const url = await fetchReplayUrl(session.sessionId);
+        replayUrlRef.current = url;
+        downloadBlobUrl(url, `${stamp}.mp4`);
+      } catch (err) {
+        alert(`リプレイ動画の取得に失敗しました(Trajectoryは保存済み): ${err}`);
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [session, notebookName, agentRunInfo, agentTurns, agentFinalStatus]);
+
+  const handleAddPromptVersion = useCallback(() => {
+    setAgentConfig((prev) => {
+      const cur = activePrompt(prev);
+      let n = prev.promptVersions.length + 1;
+      while (prev.promptVersions.some((v) => v.name === `v${n}`)) n += 1;
+      const v = newPromptVersion(`v${n}`, cur);
+      return { ...prev, promptVersions: [...prev.promptVersions, v], activePromptId: v.id };
+    });
+  }, []);
+
   const handleSaveReplay = useCallback(async () => {
     if (!session) return;
     // Open the tab synchronously, inside the click's user-gesture chain —
@@ -629,7 +1120,8 @@ export default function App() {
     setPerceptionSteps([]);
     setNotebookId(null);
     setNotebookName("");
-  }, [session]);
+    resetAgentState();
+  }, [session, resetAgentState]);
 
   if (!session) {
     return (
@@ -653,7 +1145,7 @@ export default function App() {
         onSaveReplay={handleSaveReplay}
         onEndSession={handleEndSession}
         onShowDocs={() => setDocsVisible(true)}
-        resetting={resetting}
+        resetting={resetting || agentRunning || evalRunning}
         savingReplay={savingReplay}
       />
       <ApiDocsModal visible={docsVisible} docs={session.apiDocs} theme={theme} onClose={() => setDocsVisible(false)} />
@@ -665,11 +1157,11 @@ export default function App() {
           onChangeLang={setPromptLang}
         />
       )}
-      <div className="main-panes">
+      <div className={mode === "agent" ? "main-panes main-panes-agent" : "main-panes"}>
         <div className="pane pane-camera">
           <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />
         </div>
-        <div className="pane pane-editor">
+        <div className="pane pane-editor" ref={editorPaneRef} onScroll={handleEditorScroll}>
           {mode === "manual" ? (
             <>
               <div className="editor-header">
@@ -710,7 +1202,7 @@ export default function App() {
                 </div>
               ))}
             </>
-          ) : (
+          ) : mode === "prompt" ? (
             <>
               <div className="editor-header">
                 <span className="editor-title">プロンプトエンジニアリングモード</span>
@@ -741,11 +1233,135 @@ export default function App() {
                 <button onClick={handleAddExperiment}>+ 実験を追加</button>
               </div>
             </>
+          ) : (
+            <>
+              <div className="editor-header">
+                <span className="editor-title">Agent Mode</span>
+                <span className="editor-title">
+                  {evalActive
+                    ? `汎化テスト: ${evalJobs.filter((j) => j.state === "done").length}/${evalJobs.length} タスク終了`
+                    : agentRunning
+                    ? `${agentLiveTurn?.phase === "executing" ? "コード実行中" : "生成中"}(ターン ${agentLiveTurn?.turn ?? agentTurns.length} / ${agentConfig.maxTurns})`
+                    : `完了ターン数: ${agentTurns.length}`}
+                </span>
+              </div>
+              <div className="agent-toolbar-row">
+                {evalSuite && evalSuite.tasks.length > 1 && (
+                  <label className="task-switch">
+                    <span className="prompt-version-caption">タスク</span>
+                    <select
+                      value={session.taskId}
+                      disabled={agentRunning || evalRunning || switchingTask}
+                      onChange={(e) => handleSwitchTask(e.target.value)}
+                    >
+                      {evalSuite.tasks.map((t) => (
+                        <option key={t.task_id} value={t.task_id}>
+                          {shortTaskName(t.name)}
+                        </option>
+                      ))}
+                    </select>
+                    {switchingTask && <span className="muted">切り替え中...</span>}
+                  </label>
+                )}
+                <PromptVersionSelect
+                  versions={agentConfig.promptVersions}
+                  activeId={agentConfig.activePromptId}
+                  onSelect={(id) => setAgentConfig((prev) => ({ ...prev, activePromptId: id }))}
+                  onAdd={handleAddPromptVersion}
+                  disabled={agentRunning}
+                />
+                <AgentRunControls
+                  running={agentRunning}
+                  stopping={agentStopping}
+                  currentTurn={agentLiveTurn?.turn ?? agentTurns.length}
+                  maxTurns={agentConfig.maxTurns}
+                  onStart={handleAgentStart}
+                  onStop={handleAgentStop}
+                  disabled={resetting || evalRunning}
+                  onExport={handleExport}
+                  canExport={agentTurns.length > 0 && !evalRunning}
+                  exporting={exporting}
+                />
+              </div>
+              {evalSuite && (
+                <details className="eval-launch">
+                  <summary>汎化テスト(同じプロンプトを複数タスクで試す)</summary>
+                  <p className="muted">{evalSuite.name}: 上で選んだプロンプト・設定のまま、選んだタスクを順番に実行して成功数を数えます。</p>
+                  <div className="eval-task-picker">
+                    {evalSuite.tasks.map((t) => (
+                      <label key={t.task_id} className={evalSelected.has(t.task_id) ? "eval-pick on" : "eval-pick"}>
+                        <input
+                          type="checkbox"
+                          checked={evalSelected.has(t.task_id)}
+                          disabled={evalRunning}
+                          onChange={() =>
+                            setEvalSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(t.task_id)) next.delete(t.task_id);
+                              else next.add(t.task_id);
+                              return next;
+                            })
+                          }
+                        />
+                        {shortTaskName(t.name)}
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="run-btn"
+                    onClick={handleEvalStart}
+                    disabled={agentRunning || evalRunning || evalSelected.size === 0}
+                  >
+                    ▶ {evalSelected.size}タスクで実行
+                  </button>
+                  <small className="muted"> 各タスクは順番に、専用の環境で実行されます(このセッションのタスクはこの環境を使います)。</small>
+                </details>
+              )}
+              <details className="agent-settings-toggle">
+                <summary>セッション設定(画像入力・終了条件・max turns)</summary>
+                <AgentSessionSettings config={agentConfig} onChange={setAgentConfig} disabled={agentRunning} />
+              </details>
+              <div className="agent-prompt-section">
+                <AgentPromptEditor
+                  config={agentConfig}
+                  onChange={setAgentConfig}
+                  disabled={agentRunning}
+                  taskInstruction={session.taskPrompt ?? ""}
+                  apiDocument={session.apiDocs}
+                  lastStdout={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stdout : null}
+                  lastStderr={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stderr : null}
+                />
+              </div>
+              {evalActive && (
+                <EvalStrip
+                  jobs={evalJobs}
+                  viewedId={evalViewedId}
+                  running={evalRunning}
+                  stopping={evalStopping}
+                  onSelect={handleEvalSelectJob}
+                  onStop={handleEvalStop}
+                  onClose={() => {
+                    setEvalActive(false);
+                    setEvalJobs([]);
+                    setEvalViewId(null);
+                    setEvalError(null);
+                  }}
+                />
+              )}
+              {evalError && <p className="error">{evalError}</p>}
+              <AgentTrajectoryView turns={shownTurns} liveTurn={shownLive} finalStatus={shownFinal} />
+            </>
           )}
         </div>
-        <div className="pane pane-perception">
-          <PerceptionPanel steps={perceptionSteps} />
-        </div>
+        {mode !== "agent" && (
+          // Agent Mode has no separate Perception pane — each turn's
+          // Perception steps render inline under that turn's result in
+          // AgentTrajectoryView instead (see the "agent" branch above).
+          <div className="pane pane-perception">
+            <PerceptionPanel steps={perceptionSteps} />
+          </div>
+        )}
       </div>
     </div>
   );

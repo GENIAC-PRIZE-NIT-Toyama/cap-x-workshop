@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { renderFrame } from "./png.js";
 import {
+  AGENT_TURN_RESPONSES,
   API_DOCS,
   GENERATE_RESPONSE,
   GENERATE_RESPONSE_LONG,
@@ -112,6 +113,38 @@ function extractCode(text) {
   return match ? match[1].trim() : text.trim();
 }
 
+// Mirrors code_extract.py's extract_last_code_block(): the *last* fenced
+// block, or null if there isn't one at all — unlike extractCode() above
+// (used by prompt mode), this deliberately does NOT fall back to treating
+// the whole response as code. Agent Mode's mock loop (agentRun()) uses this
+// null case as its "the agent chose to stop" signal, same as the real
+// backend's agent_loop.py.
+function extractLastCodeBlock(text) {
+  const matches = [...text.matchAll(/```(?:python)?\n([\s\S]*?)```/g)];
+  if (matches.length === 0) return null;
+  return matches[matches.length - 1][1].trim();
+}
+
+// Not a real Jinja2 renderer — just enough `{{ name }}` substitution to
+// exercise the frontend's preview button (AgentConfigPanel.tsx) against
+// something. No {% for %}/{% if %} support; the real backend's
+// prompt_render.py handles those against an actual SandboxedEnvironment.
+function mockRenderTemplate(template, variables) {
+  const missing = new Set();
+  const rendered = template.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (_, name) => {
+    if (!(name in variables) || variables[name] === undefined) {
+      missing.add(name);
+      return `{{ ${name} }}`;
+    }
+    return String(variables[name] ?? "");
+  });
+  if (missing.size > 0) {
+    const names = Object.keys(variables).sort().join(", ");
+    return { error: `[MOCK] '${[...missing][0]}' is undefined. 使える変数: ${names}` };
+  }
+  return { rendered };
+}
+
 function broadcastFrame(session) {
   const camera = session.primaryCamera;
   const message = JSON.stringify({ camera, image: renderFrame({ camera, step: session.step }) });
@@ -189,6 +222,91 @@ async function streamGenerate(req, res, messages) {
   console.log(`${req.method} ${req.url} -> 200 (sse)`);
 }
 
+// Mock of agent_loop.py's run_agent_loop() — streams the canned
+// AGENT_TURN_RESPONSES as turn_start/llm_delta/turn_done events, honoring
+// termination_mode/max_turns/vision_enabled/stop the same way the real
+// backend's event shapes do, so the frontend's SSE consumer (api.ts's
+// runAgentLoop()) exercises the exact same code path against either
+// backend.
+async function agentRun(req, res, session, body) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Mock-Backend": "1",
+  });
+  const write = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+  session.agentStopRequested = false;
+  const maxTurns = body.max_turns ?? 10;
+  const turnCount = Math.min(AGENT_TURN_RESPONSES.length, maxTurns);
+
+  // Mirrors agent_loop.py's input_text/input_frames tracking: what the
+  // *next* turn's turn_start reports as having been sent is whatever this
+  // turn's prompt text + result frames were. The mock doesn't actually
+  // render Jinja (no prompt_render.py equivalent here) — it just uses the
+  // raw system_prompt/feedback_prompt text verbatim, which is enough to
+  // exercise the chat view's layout without a real template engine.
+  let inputText = body.system_prompt ?? "";
+  let inputFrames = body.vision_enabled ? framesFor(session) : null;
+
+  for (let i = 0; i < turnCount; i++) {
+    const turn = i + 1;
+    if (session.agentStopRequested) {
+      write({ type: "loop_done", status: "stopped", turn: turn - 1, detail: null });
+      return res.end();
+    }
+
+    write({ type: "turn_start", turn, input_text: inputText, input_frames: inputFrames });
+    const text = AGENT_TURN_RESPONSES[i];
+    for (let c = 0; c < text.length; c += SSE_CHUNK_CHARS) {
+      write({ type: "llm_delta", turn, text: text.slice(c, c + SSE_CHUNK_CHARS) });
+      await sleep(SSE_CHUNK_INTERVAL_MS);
+    }
+
+    const code = extractLastCodeBlock(text);
+    if (code === null) {
+      write({ type: "turn_done", turn, llm_raw: text, code: null, stdout: "", stderr: "", frames: null, task_completed: null, perception_steps: [] });
+      write({ type: "loop_done", status: "agent_finished", turn, detail: null });
+      return res.end();
+    }
+
+    write({ type: "exec_start", turn });
+    await withSessionLock(session, () => simulateRun(session));
+    const result = runCellResult(session, `agent-turn-${turn}`, code);
+    // Canned "success" after turn 2, purely so termination_mode="simulation"
+    // has something to trigger on in the mock.
+    const taskCompleted = turn >= 2 ? true : null;
+    write({
+      type: "turn_done",
+      turn,
+      llm_raw: text,
+      code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      frames: body.vision_enabled ? result.frames : null,
+      task_completed: taskCompleted,
+      perception_steps: result.perception_steps,
+    });
+
+    inputText = (body.feedback_prompt ?? "") + `\n\n(stdout: ${result.stdout.trim()})`;
+    inputFrames = body.vision_enabled ? result.frames : null;
+
+    if (body.termination_mode === "simulation" && taskCompleted) {
+      write({ type: "loop_done", status: "task_completed", turn, detail: null });
+      return res.end();
+    }
+    if (session.agentStopRequested) {
+      write({ type: "loop_done", status: "stopped", turn, detail: null });
+      return res.end();
+    }
+  }
+
+  write({ type: "loop_done", status: "max_turns", turn: turnCount, detail: null });
+  res.end();
+  console.log(`${req.method} ${req.url} -> 200 (sse, agent)`);
+}
+
 async function handle(req, res) {
   const { pathname } = new URL(req.url, `http://${HOST}`);
 
@@ -206,7 +324,15 @@ async function handle(req, res) {
     return send(req, res, 200, { session_id: session.id, task_id: session.taskId, ...resetPayload(session) });
   }
 
-  const match = /^\/api\/sessions\/([^/]+)(?:\/(observation|cells\/run|reset|experiments\/generate|replay))?$/.exec(pathname);
+  if (req.method === "POST" && pathname === "/api/agent/preview") {
+    const body = await readJson(req, { template: "string" });
+    return send(req, res, 200, mockRenderTemplate(body.template, body.variables ?? {}));
+  }
+
+  const match =
+    /^\/api\/sessions\/([^/]+)(?:\/(observation|cells\/run|reset|experiments\/generate|replay|agent\/run|agent\/stop))?$/.exec(
+      pathname,
+    );
   if (!match) return send(req, res, 404, { detail: "Not Found" });
   const session = sessions.get(match[1]);
   const action = match[2];
@@ -250,6 +376,14 @@ async function handle(req, res) {
   }
   if (req.method === "POST" && action === "replay") {
     return send(req, res, 501, "[MOCK] replay is not supported by the mock backend", "text/plain");
+  }
+  if (req.method === "POST" && action === "agent/run") {
+    const body = await readJson(req, { system_prompt: "string", feedback_prompt: "string" });
+    return agentRun(req, res, session, body);
+  }
+  if (req.method === "POST" && action === "agent/stop") {
+    session.agentStopRequested = true;
+    return send(req, res, 200, { ok: true });
   }
   return send(req, res, 405, { detail: "Method Not Allowed" });
 }

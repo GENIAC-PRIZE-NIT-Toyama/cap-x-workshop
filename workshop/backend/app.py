@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from typing import Any
 
 import requests
 import websockets
@@ -24,9 +25,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from websockets.asyncio.client import connect as ws_connect
 
+from workshop.backend.agent_loop import AgentLoopRegistry, AgentRunRequest, run_agent_loop
 from workshop.backend.code_extract import extract_code
-from workshop.backend.config import REPO_ROOT, TASKS, get_task, resolve_config_path
+from workshop.backend.config import REPO_ROOT, SUITES, TASKS, get_suite, get_task, resolve_config_path
+from workshop.backend.eval_runner import EvalRegistry, EvalRunRequest, run_eval
 from workshop.backend.llm_client import stream_chat_completion
+from workshop.backend.prompt_render import PromptRenderError, render_template
 from workshop.backend.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -54,6 +58,11 @@ class GenerateRequest(BaseModel):
     settings: dict[str, float] = {}
 
 
+class AgentPreviewRequest(BaseModel):
+    template: str
+    variables: dict[str, Any] = {}
+
+
 def _require_session(app: FastAPI, session_id: str) -> SessionManager:
     manager: SessionManager = app.state.manager
     if manager.get(session_id) is None:
@@ -77,6 +86,11 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
     )
 
     app.state.manager = SessionManager(video_root=VIDEO_ROOT, repo_root=REPO_ROOT, gpu_uuids=gpu_uuids)
+    # Tracks in-flight Agent Mode loops' stop requests, keyed by session_id
+    # (see agent_loop.py's AgentLoopRegistry docstring). One shared instance
+    # for the whole process, like app.state.manager.
+    app.state.agent_loops = AgentLoopRegistry()
+    app.state.evals = EvalRegistry()
 
     @app.on_event("startup")
     async def _start_reaper() -> None:
@@ -105,8 +119,23 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
                     "featured": t.featured,
                 }
                 for t in TASKS
+                if t.listed
             ]
         }
+
+    @app.post("/api/agent/preview")
+    async def agent_preview(request: AgentPreviewRequest) -> dict:
+        """Renders a System/Feedback Prompt template against caller-supplied
+        variables without touching any session or sandbox container — pure
+        Jinja2 rendering (see prompt_render.py). The frontend's template
+        preview (WORKSHOP_AGENT_PLAN.md §2.2) calls this with either dummy
+        placeholder values (before a run has produced anything real) or the
+        real values from the most recently completed turn, entirely as the
+        caller's choice; this endpoint doesn't know or care which."""
+        try:
+            return {"rendered": render_template(request.template, request.variables)}
+        except PromptRenderError as exc:
+            return {"error": str(exc)}
 
     @app.post("/api/sessions")
     async def create_session(request: CreateSessionRequest) -> dict:
@@ -117,7 +146,7 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
 
         manager: SessionManager = app.state.manager
         try:
-            session = await manager.create_session(task.task_id, resolve_config_path(task))
+            session = await manager.create_session(task.task_id, resolve_config_path(task), task.runtime)
         except Exception as exc:
             logger.exception("Failed to start session for task %s", task.task_id)
             raise HTTPException(status_code=500, detail=str(exc))
@@ -207,6 +236,10 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             # back as a normal {"ok": False, ...} 200 response instead).
             detail = exc.response.text if exc.response is not None else str(exc)
             raise HTTPException(status_code=500, detail=detail)
+        except RuntimeError as exc:
+            # Worker connection lost (SessionManager._request adds the
+            # container's OOM/exit state to the message).
+            raise HTTPException(status_code=502, detail=str(exc))
 
     @app.post("/api/sessions/{session_id}/experiments/generate")
     async def generate_experiment(session_id: str, request: GenerateRequest) -> StreamingResponse:
@@ -261,6 +294,71 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             yield f"data: {json.dumps({'type': 'done', 'full_text': full_text, 'code': code})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/sessions/{session_id}/agent/run")
+    async def agent_run(session_id: str, request: AgentRunRequest) -> StreamingResponse:
+        """Streams one full Agent Mode run (WORKSHOP_AGENT_PLAN.md §1) as
+        Server-Sent Events — one event per `agent_loop.run_agent_loop()`
+        yield. Unlike `/experiments/generate` above, this endpoint drives
+        the *entire* multi-turn loop itself (reset -> LLM -> code exec ->
+        feedback -> LLM -> ... until a termination condition); the frontend
+        only starts/stops it and renders whatever events arrive.
+        """
+        manager = _require_session(app, session_id)
+        registry: AgentLoopRegistry = app.state.agent_loops
+
+        async def event_stream():
+            async for event in run_agent_loop(manager, registry, session_id, request):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/sessions/{session_id}/agent/stop")
+    async def agent_stop(session_id: str) -> dict:
+        """Requests the in-flight Agent Loop for this session (if any) stop
+        at its next check — between turns, or as soon as the current LLM
+        stream finishes (see run_agent_loop's `registry.should_stop()`
+        checks). Best-effort: a cell already executing (up to the existing
+        180s sandbox timeout) is not interrupted mid-run."""
+        _require_session(app, session_id)
+        registry: AgentLoopRegistry = app.state.agent_loops
+        registry.request_stop(session_id)
+        return {"ok": True}
+
+    @app.get("/api/eval/suites")
+    async def list_eval_suites() -> dict:
+        return {
+            "suites": [
+                {
+                    **{k: v for k, v in suite.items() if k not in ("task_ids", "default_task_ids")},
+                    "default_task_ids": suite["default_task_ids"],
+                    "tasks": [{"task_id": tid, "name": get_task(tid).name} for tid in suite["task_ids"]],
+                }
+                for suite in SUITES
+            ]
+        }
+
+    @app.post("/api/eval/run")
+    async def eval_run(request: EvalRunRequest) -> StreamingResponse:
+        """Streams a multi-task evaluation (eval_runner.py) as SSE. Closing
+        the connection cancels the evaluation and tears down its sessions."""
+        try:
+            get_suite(request.suite_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown suite_id: {request.suite_id}")
+
+        async def event_stream():
+            async for event in run_eval(app.state.manager, app.state.agent_loops, app.state.evals, request):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/eval/{eval_id}/stop")
+    async def eval_stop(eval_id: str) -> dict:
+        if not app.state.evals.exists(eval_id):
+            raise HTTPException(status_code=404, detail="Evaluation not found")
+        app.state.evals.request_stop(eval_id, app.state.agent_loops)
+        return {"ok": True}
 
     @app.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str) -> dict:

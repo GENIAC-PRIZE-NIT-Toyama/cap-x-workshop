@@ -50,6 +50,7 @@ dependencies = [
   "fastapi",
   "transformers",
   "openai",
+  "jinja2",
   "pyrender",
   "opencv-python-headless",
   "pillow>=10",

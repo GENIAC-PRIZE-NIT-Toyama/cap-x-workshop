@@ -17,6 +17,7 @@ from capx.integrations.vision.molmo import init_molmo
 from capx.integrations.vision.sam2 import init_sam2_point_prompt
 from capx.integrations.vision.sam3 import init_sam3, init_sam3_point_prompt
 from capx.utils.camera_utils import obs_get_rgb
+from capx.utils.visualization_utils import overlay_segmentation_masks
 from capx.utils.depth_utils import (
     deproject_pixel_to_camera,
     depth_color_to_pointcloud,
@@ -227,6 +228,12 @@ class FrankaLiberoApi(ApiBase):
 
         pos = np.asarray(position, dtype=np.float64).reshape(3)
         quat_wxyz = np.asarray(quaternion_wxyz, dtype=np.float64).reshape(4)
+        self._log_step(
+            "goto_pose",
+            f"Moving to position [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]"
+            + (f" (z_approach={z_approach})" if z_approach != 0.0 else "")
+            + " …",
+        )
         # Align with legacy env: apply TCP offset in end-effector frame
         quat_xyzw = np.array(
             [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]], dtype=np.float64
@@ -275,6 +282,7 @@ class FrankaLiberoApi(ApiBase):
             )
         joints = np.asarray(self.cfg[:-1], dtype=np.float64).reshape(7)
         self._env.move_to_joints_blocking(joints)
+        self._log_step_update(text="Motion complete.")
 
     def open_gripper(self) -> None:
         """Open gripper fully.
@@ -282,9 +290,11 @@ class FrankaLiberoApi(ApiBase):
         Args:
             None
         """
+        self._log_step("open_gripper", "Opening gripper …")
         self._env._set_gripper(1.0)
         for _ in range(40):
             self._env._step_once()
+        self._log_step_update(text="Gripper opened.")
 
     def close_gripper(self) -> None:
         """Close gripper fully.
@@ -292,9 +302,11 @@ class FrankaLiberoApi(ApiBase):
         Args:
             None
         """
+        self._log_step("close_gripper", "Closing gripper …")
         self._env._set_gripper(0.0)
         for _ in range(60):
             self._env._step_once()
+        self._log_step_update(text="Gripper closed.")
 
     def get_object_pose(self, object_name: str, use_multiview: bool = True) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
         """Get the pose of an object in the environment from a natural language description.
@@ -313,6 +325,7 @@ class FrankaLiberoApi(ApiBase):
             quaternion_wxyz: (4,) WXYZ unit quaternion (world frame).
         """
         start_time = time.time()
+        self._log_step("get_object_pose", f"Detecting object **'{object_name}'** …")
 
         result = self.get_object_3d_points_and_masks_from_language(
             object_name, use_multiview=use_multiview
@@ -320,10 +333,12 @@ class FrankaLiberoApi(ApiBase):
         points_3d = result["points_3d"]
 
         if len(points_3d) == 0:
+            self._log_step_update(text=f"'{object_name}' not found (no 3D points).")
             return None, None
 
         points_3d, _ = self.filter_noise(points_3d)
         if len(points_3d) == 0:
+            self._log_step_update(text=f"'{object_name}' not found (no valid points after filtering).")
             return None, None
 
         obb = self.get_oriented_bounding_box_from_3d_points(points_3d)
@@ -339,6 +354,8 @@ class FrankaLiberoApi(ApiBase):
         quaternion_wxyz = vtf.SO3.from_matrix(R).wxyz
 
         print(f"get_object_pose in {time.time() - start_time} seconds")
+        pos_str = f"[{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]"
+        self._log_step_update(text=f"Position: {pos_str} ({time.time() - start_time:.1f}s)")
         return position, quaternion_wxyz
 
     def sample_grasp_pose(self, object_name: str, use_multiview: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -355,6 +372,7 @@ class FrankaLiberoApi(ApiBase):
             quaternion_wxyz: (4,) WXYZ unit quaternion (world frame).
         """
         start_time = time.time()
+        self._log_step("sample_grasp_pose", f"Planning grasp for **'{object_name}'** …")
 
         result = self.get_object_3d_points_and_masks_from_language(
             object_name, use_multiview=use_multiview
@@ -386,6 +404,7 @@ class FrankaLiberoApi(ApiBase):
         # pc_full = self.subsample_point_cloud(pc_full, max_points=20000)
         # pc_segment = self.subsample_point_cloud(pc_segment, max_points=10000)
 
+        self._log_step("Contact GraspNet", "Running grasp candidate planning …")
         grasp_sample_tf, grasp_scores = self.plan_grasp_from_point_clouds(pc_full, pc_segment)
 
         best_idx = grasp_scores.argmax()
@@ -394,6 +413,10 @@ class FrankaLiberoApi(ApiBase):
             rotation=vtf.SO3.from_rpy_radians(0.0, 0.0, np.pi / 2)
         )
 
+        self._log_step_update(
+            text=f"Best grasp score: {float(grasp_scores.max()):.3f}, "
+            f"position: {np.round(best_grasp.wxyz_xyz[-3:], 3).tolist()} ({time.time() - start_time:.1f}s)"
+        )
         print(f"sample_grasp_pose in {time.time() - start_time} seconds")
         print(f"Grasp sample position for {object_name}: {best_grasp.wxyz_xyz[-3:]}")
         print(f"Grasp sample quaternion wxyz for {object_name}: {best_grasp.wxyz_xyz[:4]}")
@@ -517,6 +540,7 @@ class FrankaLiberoApi(ApiBase):
             intrinsics = obs[cam_name]["intrinsics"]
             extrinsics = obs[cam_name]["pose_mat"]
             
+            self._log_step("Segmentation", f"Segmenting '{text_prompt}' in {cam_name} view (Molmo point + SAM3) …")
             # use Molmo to point prompt
             points = self.point_prompt_molmo(rgb, text_prompt)
             point = points[text_prompt]
@@ -536,6 +560,11 @@ class FrankaLiberoApi(ApiBase):
             
             mask = mask_data["mask"]
             score = mask_data["score"]
+            try:
+                vis = overlay_segmentation_masks(np.asarray(rgb), [np.asarray(mask).astype(bool)])
+                self._log_step_update(text=f"{cam_name}: best score {score:.3f}", images=vis)
+            except Exception:  # visualization only — never fail the API call
+                self._log_step_update(text=f"{cam_name}: best score {score:.3f}")
             
             # Get 3D points in camera frame
             pts_camera = depth_to_pointcloud(depth, intrinsics, subsample_factor=1)
@@ -577,13 +606,13 @@ class FrankaLiberoApi(ApiBase):
             
             # Find intersection using numpy broadcasting
             if len(wrist_pts_3d) > 0 and len(agent_pts_3d) > 0:
-                # Compute pairwise distances between all agent and wrist points
-                distances = np.linalg.norm(
-                    agent_pts_3d[:, np.newaxis, :] - wrist_pts_3d[np.newaxis, :, :], 
-                    axis=2
-                )
-                # Find minimum distance for each agent point
-                min_distances = np.min(distances, axis=1)
+                # Nearest wrist point for each agent point. A KD-tree instead of
+                # materialising the (N_agent, N_wrist, 3) difference tensor, which
+                # for large masks (e.g. a plate: ~20k points per view) is ~10GB of
+                # float64 and OOM-kills memory-limited containers.
+                from scipy.spatial import cKDTree
+
+                min_distances, _ = cKDTree(wrist_pts_3d).query(agent_pts_3d, k=1)
                 # Keep agent points within threshold
                 threshold = 0.01  # 1cm
                 if min_distances.min() < threshold:
