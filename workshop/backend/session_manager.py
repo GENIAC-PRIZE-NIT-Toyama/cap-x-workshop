@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -97,6 +98,22 @@ PROXY_CONTAINERS: dict[str, tuple[str, int]] = {
     "GRASPNET_SERVICE_URL": ("capx-workshop-proxy-graspnet", 8115),
     "PYROKI_SERVICE_URL": ("capx-workshop-proxy-pyroki", 8116),
 }
+
+# Molmo (capx/integrations/vision/molmo.py) is a fourth Perception dependency
+# — a pointing/grounding VLM FrankaLiberoApi falls back to when SAM3's
+# text-prompted segmentation finds nothing. It is served by vLLM (OpenAI-
+# compatible, hence the /v1 path) and, like the three above, is called from
+# *inside* the sandboxed session container, so it goes through a fixed-
+# destination relay from workshop/docker/docker-compose.yml
+# (perception-proxy-molmo; upstream set by MOLMO_UPSTREAM there). Only the
+# model name is configured here.
+MOLMO_MODEL = os.environ.get("WORKSHOP_VLLM_MOLMO2_MODEL", "allenai/Molmo2-8B")
+MOLMO_PROXY_CONTAINER = "capx-workshop-proxy-molmo"
+MOLMO_PROXY_PORT = 8122
+
+# Memory cap per session container. The worker keeps recorded frames
+# JPEG-compressed (env_runtime.py) so this is enough.
+WORKER_MEMORY = os.environ.get("WORKSHOP_WORKER_MEMORY", "4g")
 
 # Host port range published (127.0.0.1-only) for session containers.
 _PORT_RANGE_START = 18500
@@ -243,6 +260,10 @@ class SessionManager:
                 if rc != 0:
                     raise RuntimeError(f"docker network connect ({proxy_name}) failed: {err.strip()}")
 
+            rc, _out, err = await _run(["docker", "network", "connect", network_name, MOLMO_PROXY_CONTAINER])
+            if rc != 0:
+                raise RuntimeError(f"docker network connect ({MOLMO_PROXY_CONTAINER}) failed: {err.strip()}")
+
             container_config_path = "/workspace/" + str(
                 Path(config_path).resolve().relative_to(self._repo_root)
             )
@@ -275,7 +296,7 @@ class SessionManager:
                 "--pids-limit",
                 "512",
                 "--memory",
-                "4g",
+                WORKER_MEMORY,
                 "--cpus",
                 "2",
                 # Legacy hook-based GPU passthrough, not `--gpus` (CDI mode
@@ -299,6 +320,15 @@ class SessionManager:
             # the same network as its primary interface.
             for env_var, (proxy_name, proxy_port) in PROXY_CONTAINERS.items():
                 cmd += ["-e", f"{env_var}=http://{proxy_name}:{proxy_port}"]
+            # molmo.py's SERVICE_URL includes a trailing /v1 (its chat_url
+            # is f"{base_url.rstrip('/')}/chat/completions"), unlike the
+            # three above.
+            cmd += [
+                "-e",
+                f"MOLMO_SERVICE_URL=http://{MOLMO_PROXY_CONTAINER}:{MOLMO_PROXY_PORT}/v1",
+                "-e",
+                f"MOLMO_MODEL={MOLMO_MODEL}",
+            ]
             cmd += [
                 worker_image,
                 "--config-path",
@@ -376,7 +406,27 @@ class SessionManager:
             resp.raise_for_status()
             return resp.json()
 
-        return await asyncio.to_thread(_do)
+        try:
+            return await asyncio.to_thread(_do)
+        except requests.ConnectionError as exc:
+            # "Connection aborted / RemoteDisconnected" means the worker
+            # process is gone — say why (OOM kill, segfault, ...) instead of
+            # surfacing a bare socket error.
+            rc, out, _err = await _run(
+                [
+                    "docker",
+                    "inspect",
+                    "-f",
+                    "{{.State.Running}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}",
+                    session.container_name,
+                ]
+            )
+            state = out.strip() if rc == 0 else "container not found"
+            logger.error("Worker %s connection lost on %s %s: %s", session.container_name, method, path, state)
+            raise RuntimeError(
+                f"サンドボックスとの接続が切断されました ({state})。"
+                "メモリ不足(oom=true)やクラッシュの可能性があります。セッションを作り直してください。"
+            ) from exc
 
     def _require(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)
@@ -428,6 +478,7 @@ class SessionManager:
         await _run(["docker", "rm", "-f", session.container_name])
         for proxy_name, _port in PROXY_CONTAINERS.values():
             await _run(["docker", "network", "disconnect", "-f", session.network_name, proxy_name])
+        await _run(["docker", "network", "disconnect", "-f", session.network_name, MOLMO_PROXY_CONTAINER])
         await _run(["docker", "network", "rm", session.network_name])
 
     async def close_all(self) -> None:

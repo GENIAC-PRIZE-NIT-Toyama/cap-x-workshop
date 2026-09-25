@@ -109,12 +109,17 @@ async def run_agent_loop(
     """Runs the Agent Loop for one session, yielding one event dict per
     step. Event shapes (all carry `"type"`):
 
-    - `{"type": "turn_start", "turn": int}`
+    - `{"type": "turn_start", "turn": int, "input_text": str,
+       "input_frames": dict[str, str] | None}` — `input_text`/`input_frames`
+      are exactly what this turn's LLM call was sent (the rendered System
+      Prompt + reset frames for turn 1, or the rendered Feedback Prompt +
+      the previous turn's result frames for turn N>1) — a chat-view frontend
+      renders this as the "user" side of the turn.
     - `{"type": "llm_delta", "turn": int, "text": str}` (streamed as the
       model generates; concatenate to reconstruct that turn's full response)
     - `{"type": "turn_done", "turn": int, "llm_raw": str, "code": str,
        "stdout": str, "stderr": str, "frames": dict[str, str] | None,
-       "task_completed": bool | None}`
+       "task_completed": bool | None, "perception_steps": list[dict]}`
     - `{"type": "loop_done", "status": LoopStatus, "turn": int, "detail": str | None}`
 
     `loop_done` is always the last event; the generator returns immediately
@@ -148,8 +153,17 @@ async def run_agent_loop(
         yield {"type": "loop_done", "status": "error", "turn": 0, "detail": f"System Promptの描画に失敗しました: {exc}"}
         return
 
+    # Carried across loop iterations: what the *next* turn's LLM call will
+    # be sent. Starts as the System Prompt + the environment's initial
+    # frames (turn 1); replaced with the rendered Feedback Prompt + that
+    # turn's result frames after each turn (see the bottom of the loop
+    # body) — turn N+1's `turn_start` event reports turn N's execution
+    # output as its "input", which is exactly correct: that's what actually
+    # went into the request.
+    input_text = system_text
+    input_frames = reset_result.get("frames", {})
     messages: list[dict[str, Any]] = [
-        {"role": "user", "content": _to_content(system_text, reset_result.get("frames", {}), req.vision_enabled)}
+        {"role": "user", "content": _to_content(input_text, input_frames, req.vision_enabled)}
     ]
 
     turn = 0
@@ -159,7 +173,12 @@ async def run_agent_loop(
                 yield {"type": "loop_done", "status": "stopped", "turn": turn - 1, "detail": None}
                 return
 
-            yield {"type": "turn_start", "turn": turn}
+            yield {
+                "type": "turn_start",
+                "turn": turn,
+                "input_text": input_text,
+                "input_frames": input_frames if req.vision_enabled else None,
+            }
 
             full_text = ""
             try:
@@ -171,20 +190,36 @@ async def run_agent_loop(
                 # the event loop for the whole LLM call.
                 loop = asyncio.get_event_loop()
                 queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue()
+                cancel = threading.Event()
 
-                def _produce(msgs: list[dict[str, Any]] = messages) -> None:
+                def _produce(msgs: list[dict[str, Any]] = messages, cancel: threading.Event = cancel) -> None:
+                    gen = stream_chat_completion(msgs, req.settings)
                     try:
-                        for delta in stream_chat_completion(msgs, req.settings):
+                        for delta in gen:
+                            if cancel.is_set():
+                                break
                             loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
                     except Exception as exc:  # noqa: BLE001 - surfaced to the SSE stream as an error event
                         loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
                     finally:
+                        # Closing the generator closes the upstream HTTP
+                        # stream, which is what actually stops vLLM
+                        # generating for a cancelled request.
+                        gen.close()
                         loop.call_soon_threadsafe(queue.put_nowait, None)
 
                 threading.Thread(target=_produce, daemon=True).start()
 
+                stopped_mid_generation = False
                 while True:
-                    item = await queue.get()
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        if registry.should_stop(session_id):
+                            cancel.set()
+                            stopped_mid_generation = True
+                            break
+                        continue
                     if item is None:
                         break
                     kind, text = item
@@ -192,6 +227,13 @@ async def run_agent_loop(
                         raise RuntimeError(text)
                     full_text += text
                     yield {"type": "llm_delta", "turn": turn, "text": text}
+                    if registry.should_stop(session_id):
+                        cancel.set()
+                        stopped_mid_generation = True
+                        break
+                if stopped_mid_generation:
+                    yield {"type": "loop_done", "status": "stopped", "turn": turn, "detail": None}
+                    return
             except Exception as exc:
                 yield {
                     "type": "loop_done",
@@ -208,8 +250,25 @@ async def run_agent_loop(
                 # The model chose not to act — this *is* "the agent decides
                 # it's done" (see WORKSHOP_AGENT_PLAN.md §1.3), independent
                 # of termination_mode.
+                # Still emit the turn itself (nothing executed: code=None) so
+                # the client keeps the model's final message on screen.
+                yield {
+                    "type": "turn_done",
+                    "turn": turn,
+                    "llm_raw": full_text,
+                    "code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "frames": None,
+                    "task_completed": None,
+                    "perception_steps": [],
+                }
                 yield {"type": "loop_done", "status": "agent_finished", "turn": turn, "detail": None}
                 return
+
+            # Generation is finished; what follows is code execution — lets
+            # the UI show "生成中" and "実行中" as separate states.
+            yield {"type": "exec_start", "turn": turn}
 
             try:
                 result = await manager.run_cell(session_id, f"agent-turn-{turn}", code)
@@ -244,6 +303,10 @@ async def run_agent_loop(
 
             frames = result.get("frames", {})
             messages.append({"role": "user", "content": _to_content(feedback_text, frames, req.vision_enabled)})
+            # This turn's execution output becomes next turn's LLM input —
+            # see the comment above the loop where these are first set.
+            input_text = feedback_text
+            input_frames = frames
 
             yield {
                 "type": "turn_done",
@@ -254,6 +317,7 @@ async def run_agent_loop(
                 "stderr": result.get("stderr", ""),
                 "frames": frames if req.vision_enabled else None,
                 "task_completed": task_completed,
+                "perception_steps": result.get("perception_steps", []),
             }
 
             if req.termination_mode == "simulation" and task_completed:

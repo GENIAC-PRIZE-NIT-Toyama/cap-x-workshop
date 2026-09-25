@@ -233,6 +233,10 @@ def create_app(gpu_uuids: list[str] | None = None) -> FastAPI:
             # back as a normal {"ok": False, ...} 200 response instead).
             detail = exc.response.text if exc.response is not None else str(exc)
             raise HTTPException(status_code=500, detail=detail)
+        except RuntimeError as exc:
+            # Worker connection lost (SessionManager._request adds the
+            # container's OOM/exit state to the message).
+            raise HTTPException(status_code=502, detail=str(exc))
 
     @app.post("/api/sessions/{session_id}/experiments/generate")
     async def generate_experiment(session_id: str, request: GenerateRequest) -> StreamingResponse:

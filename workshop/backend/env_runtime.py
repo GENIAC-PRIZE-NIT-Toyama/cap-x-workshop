@@ -118,6 +118,52 @@ def _resolve_task_prompt(exec_env: Any, raw_prompt: str | None) -> str | None:
     return raw_prompt.format(libero_environment_goal=goal)
 
 
+# Recording frames raw is what OOM-killed LIBERO workers: an 800x800x3 frame is
+# ~1.9MB and a goto_pose() appends many, all held until the episode ends (for
+# replay). So (1) recorded frames are kept JPEG-compressed (~20x smaller) and
+# (2) recording is sub-sampled at least this coarsely (both simulators default
+# to every 4th/5th sim step; the live view and replay only need ~10-15 fps).
+MIN_SUBSAMPLE_RATE = 10
+_BUFFER_JPEG_QUALITY = 90
+
+
+class CompressedFrameList(list):
+    """Drop-in for the low-level env's `_frame_buffer` list that stores each
+    appended (H, W, 3) uint8 frame as JPEG bytes and decodes on read.
+
+    The simulators only use append()/clear()/len()/slicing/iteration and
+    `.copy()` on the elements (capx/envs/simulators/{libero,robosuite_base}.py,
+    capx/envs/tasks/base.py), all of which keep working. Replay therefore
+    contains *every* recorded frame (no cap), at the cost of slight JPEG
+    lossiness.
+    """
+
+    @staticmethod
+    def _encode(frame: np.ndarray) -> bytes:
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(frame).astype("uint8")).save(
+            buf, format="JPEG", quality=_BUFFER_JPEG_QUALITY
+        )
+        return buf.getvalue()
+
+    @staticmethod
+    def _decode(data: bytes) -> np.ndarray:
+        return np.array(Image.open(io.BytesIO(data)).convert("RGB"))
+
+    def append(self, frame: np.ndarray) -> None:  # type: ignore[override]
+        super().append(self._encode(frame))
+
+    def __getitem__(self, index):  # type: ignore[override]
+        item = super().__getitem__(index)
+        if isinstance(index, slice):
+            return [self._decode(x) for x in item]
+        return self._decode(item)
+
+    def __iter__(self):
+        for data in super().__iter__():
+            yield self._decode(data)
+
+
 class EnvRuntime:
     """Stateful wrapper around one `CodeExecutionEnvBase` instance."""
 
@@ -146,7 +192,16 @@ class EnvRuntime:
         self._cell_counter = 0
         self._last_obs: dict[str, Any] = {}
 
+        self._install_compressed_buffers()
         self._env.enable_video_capture(True, clear=True)
+
+    def _install_compressed_buffers(self) -> None:
+        low_level = self._env.low_level_env
+        for name in ("_frame_buffer", "_wrist_frame_buffer"):
+            if isinstance(getattr(low_level, name, None), list):
+                setattr(low_level, name, CompressedFrameList())
+        if hasattr(low_level, "_subsample_rate"):
+            low_level._subsample_rate = max(low_level._subsample_rate, MIN_SUBSAMPLE_RATE)
 
     def reset(self) -> dict[str, Any]:
         obs, info = self._env.reset()

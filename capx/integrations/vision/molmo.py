@@ -17,7 +17,15 @@ _PROC: Any | None = None  # kept for backward compatibility; unused with vLLM HT
 _MODEL: Any | None = None  # kept for backward compatibility; unused with vLLM HTTP API
 
 # SERVICE_URL = "https://openrouter.ai/api/" # OpenRouter
-SERVICE_URL = "http://127.0.0.1:8122/v1"  # local
+# Overridable via env var, matching every other capx.integrations.vision.*
+# client (see e.g. sam3.py's SERVICE_URL, graspnet.py's SERVICE_URL) — this
+# one was the odd one out (hardcoded, no os.environ.get()), which is a
+# problem anywhere this runs somewhere other than the same machine as the
+# Molmo server itself (e.g. workshop/backend/session_manager.py's sandboxed
+# session containers, which reach Perception services only through a fixed
+# relay it injects via this exact env var name).
+SERVICE_URL = os.environ.get("MOLMO_SERVICE_URL", "http://127.0.0.1:8122/v1")  # local
+DEFAULT_MODEL = os.environ.get("MOLMO_MODEL", "allenai/Molmo2-8B")
 
 
 
@@ -142,7 +150,7 @@ def _image_to_data_url(image: PIL.Image.Image) -> str:
 def init_molmo(
     # model_name: str = "allenai/moldmo-2-8b:free", # OpenRouter
     # model_name: str = "allenai/Molmo2-O-7B",
-    model_name: str = "allenai/Molmo2-8B",
+    model_name: str = DEFAULT_MODEL,
     base_url: str = SERVICE_URL,
     api_key: str | None = None,
 ) -> Callable[[PIL.Image.Image, list[str] | None], dict[str, tuple[int | None, int | None]]]:

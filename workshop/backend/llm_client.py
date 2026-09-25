@@ -61,9 +61,14 @@ def stream_chat_completion(messages: list[dict[str, Any]], settings: dict[str, f
         stream=True,
         **settings,
     )
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
+    try:
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+    finally:
+        # Reached on early close too (agent loop stop) — drops the HTTP
+        # connection so vLLM aborts the in-flight generation.
+        stream.close()

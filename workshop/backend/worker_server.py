@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import tyro
@@ -46,8 +47,21 @@ class ReplayRequest(BaseModel):
     suffix: str = "combined"
 
 
-def create_app(runtime: EnvRuntime) -> FastAPI:
+def create_app(runtime: EnvRuntime, sim_executor: ThreadPoolExecutor) -> FastAPI:
     app = FastAPI(title="CaP-X Workshop Session Worker")
+
+    # Everything that touches MuJoCo/EGL (reset, run_cell, observation,
+    # replay) runs on `sim_executor`'s single thread — the same one that
+    # built the EnvRuntime. robosuite only calls the EGL context's
+    # make_current() once, at construction (binding_utils.py), and an EGL
+    # context is bound to the thread that made it current. With
+    # asyncio.to_thread (a pool of different threads) renders could run on a
+    # thread with no current context, returning uninitialized memory (the
+    # "static noise" frames), and reset/run_cell could overlap. One thread
+    # fixes both. /stream only copies already-recorded numpy frames (no GL),
+    # so it stays on the default pool and keeps flowing during a cell.
+    async def on_sim_thread(fn, *args):
+        return await asyncio.get_running_loop().run_in_executor(sim_executor, fn, *args)
 
     @app.get("/health")
     async def health() -> dict:
@@ -55,7 +69,7 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
 
     @app.post("/reset")
     async def reset() -> dict:
-        return await asyncio.to_thread(runtime.reset)
+        return await on_sim_thread(runtime.reset)
 
     @app.post("/run_cell")
     async def run_cell(request: RunCellRequest) -> dict:
@@ -64,7 +78,7 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
             # participant's code does (goto_pose() alone can be many seconds
             # of internal simulate-loop stepping), and /stream below needs
             # the loop free to keep pushing frames while that happens.
-            return await asyncio.to_thread(runtime.run_cell, request.cell_id, request.code)
+            return await on_sim_thread(runtime.run_cell, request.cell_id, request.code)
         except Exception as exc:  # framework-level bug, not a user code error
             # (user code errors are already caught inside CodeExecutionEnvBase
             # and come back as a normal {"ok": False, "stderr": ...} result).
@@ -73,11 +87,11 @@ def create_app(runtime: EnvRuntime) -> FastAPI:
 
     @app.get("/observation")
     async def observation() -> dict:
-        return await asyncio.to_thread(runtime.observation)
+        return await on_sim_thread(runtime.observation)
 
     @app.post("/replay")
     async def replay(request: ReplayRequest) -> dict:
-        return await asyncio.to_thread(runtime.replay, request.suffix)
+        return await on_sim_thread(runtime.replay, request.suffix)
 
     @app.websocket("/stream")
     async def stream(websocket: WebSocket) -> None:
@@ -128,9 +142,10 @@ class ServerArgs:
 def main() -> None:
     args = tyro.cli(ServerArgs)
     logger.info("Building EnvRuntime from %s ...", args.config_path)
-    runtime = EnvRuntime(args.config_path, args.video_dir)
+    sim_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sim")
+    runtime = sim_executor.submit(EnvRuntime, args.config_path, args.video_dir).result()
     logger.info("EnvRuntime ready, starting server on %s:%s", args.host, args.port)
-    app = create_app(runtime)
+    app = create_app(runtime, sim_executor)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
