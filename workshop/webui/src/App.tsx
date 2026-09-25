@@ -26,14 +26,21 @@ import PromptExperimentPanel, {
   type ExperimentUiState,
   type TurnRunState,
 } from "./components/PromptExperimentPanel";
-import AgentConfigPanel from "./components/AgentConfigPanel";
+import AgentSessionSettings from "./components/AgentSessionSettings";
+import AgentPromptEditor from "./components/AgentPromptEditor";
+import PromptVersionSelect from "./components/PromptVersionSelect";
 import AgentTrajectoryView from "./components/AgentTrajectoryView";
 import AgentRunControls from "./components/AgentRunControls";
+import { buildTrajectoryText, downloadBlobUrl, downloadText, exportTimestamp } from "./exportTrajectory";
 import {
+  activePrompt,
   defaultAgentConfig,
   newNotebookId,
+  newPromptVersion,
+  normalizeAgentConfig,
   saveNotebook,
   type AgentConfig,
+  type AgentRunInfo,
   type AgentLoopStatus,
   type AgentTurnEvent,
   type GenerationSettings,
@@ -184,11 +191,49 @@ export default function App() {
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => defaultAgentConfig());
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentTurns, setAgentTurns] = useState<AgentTurnEvent[]>([]);
-  const [agentLiveTurn, setAgentLiveTurn] = useState<{ turn: number; text: string } | null>(null);
+  const [agentLiveTurn, setAgentLiveTurn] = useState<{
+    turn: number;
+    inputText: string;
+    inputFrames: Record<string, string> | null;
+    text: string;
+    phase: "generating" | "executing";
+  } | null>(null);
   const [agentFinalStatus, setAgentFinalStatus] = useState<{ status: AgentLoopStatus; detail: string | null } | null>(
     null,
   );
+  const [agentStopping, setAgentStopping] = useState(false);
+  const [agentRunInfo, setAgentRunInfo] = useState<AgentRunInfo | null>(null);
+  const [exporting, setExporting] = useState(false);
   const agentAbortRef = useRef<AbortController | null>(null);
+
+  // Follow the output while a run streams in, unless the participant has
+  // scrolled up (re-enabled once they scroll back to the bottom or start a
+  // new run).
+  const editorPaneRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const handleEditorScroll = useCallback(() => {
+    const el = editorPaneRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }, []);
+  useEffect(() => {
+    if (mode !== "agent" || !agentRunning || !stickToBottomRef.current) return;
+    const el = editorPaneRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [mode, agentRunning, agentLiveTurn, agentTurns]);
+  // Mirrors agentLiveTurn synchronously (kept up to date by handleAgentStart's
+  // onEvent, not by an effect) so that handler's own turn_done branch can
+  // read this turn's input_text/input_frames without going stale — onEvent
+  // is one long-lived closure for the whole run, so reading React state
+  // (agentLiveTurn) directly inside it would only ever see the value from
+  // the render that created the closure, not the latest one.
+  const agentLiveTurnRef = useRef<{
+    turn: number;
+    inputText: string;
+    inputFrames: Record<string, string> | null;
+    text: string;
+    phase: "generating" | "executing";
+  } | null>(null);
 
   // Live camera feed: pushes every newly-recorded frame — including
   // mid-motion ones — while a cell is running, not just the single
@@ -221,10 +266,13 @@ export default function App() {
   const resetAgentState = useCallback(() => {
     agentAbortRef.current?.abort();
     agentAbortRef.current = null;
+    agentLiveTurnRef.current = null;
     setAgentRunning(false);
     setAgentTurns([]);
     setAgentLiveTurn(null);
     setAgentFinalStatus(null);
+    setAgentStopping(false);
+    setAgentRunInfo(null);
   }, []);
 
   const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode) => {
@@ -315,8 +363,18 @@ export default function App() {
         setExpUi(Object.fromEntries(exps.map((e) => [e.id, newExperimentUiState()])));
         setCells([newCell()]);
       } else if (notebook.mode === "agent") {
-        setAgentConfig(notebook.agentConfig ?? defaultAgentConfig());
-        setAgentTurns(notebook.agentResult?.turns ?? []);
+        setAgentConfig(normalizeAgentConfig(notebook.agentConfig));
+        setAgentRunInfo(notebook.agentResult?.runInfo ?? null);
+        // Notebooks saved before the chat-view redesign lack inputText/
+        // perceptionSteps; default them so the view never dereferences undefined.
+        setAgentTurns(
+          (notebook.agentResult?.turns ?? []).map((t) => ({
+            ...t,
+            inputText: t.inputText ?? "",
+            inputFrames: t.inputFrames ?? null,
+            perceptionSteps: t.perceptionSteps ?? [],
+          })),
+        );
         setAgentFinalStatus(
           notebook.agentResult ? { status: notebook.agentResult.status, detail: notebook.agentResult.detail } : null,
         );
@@ -353,15 +411,28 @@ export default function App() {
         cells: mode === "manual" ? cells.map((c) => c.code) : [],
         experiments: mode === "prompt" ? experiments : undefined,
         agentConfig: mode === "agent" ? agentConfig : undefined,
+        // Images (inputFrames, perceptionSteps[].images) are stripped here,
+        // not carried at all in the persisted copy — same "never persist
+        // images" policy as PromptTurn.lastRun. The live agentTurns state
+        // (used for on-screen rendering) keeps them.
         agentResult:
           mode === "agent" && agentFinalStatus
-            ? { status: agentFinalStatus.status, detail: agentFinalStatus.detail, turns: agentTurns }
+            ? {
+                status: agentFinalStatus.status,
+                detail: agentFinalStatus.detail,
+                runInfo: agentRunInfo ?? undefined,
+                turns: agentTurns.map((t) => ({
+                  ...t,
+                  inputFrames: null,
+                  perceptionSteps: t.perceptionSteps.map((s) => ({ ...s, images: [] })),
+                })),
+              }
             : undefined,
         updatedAt: new Date().toISOString(),
       });
     }, 500);
     return () => clearTimeout(timeout);
-  }, [agentConfig, agentFinalStatus, agentTurns, cells, experiments, mode, notebookId, notebookName, session]);
+  }, [agentConfig, agentFinalStatus, agentRunInfo, agentTurns, cells, experiments, mode, notebookId, notebookName, session]);
 
   const updateCell = useCallback((id: string, patch: Partial<CellState>) => {
     setCells((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -664,49 +735,97 @@ export default function App() {
   const handleAgentStart = useCallback(async () => {
     if (!session || agentRunning) return;
     setAgentTurns([]);
+    agentLiveTurnRef.current = null;
     setAgentLiveTurn(null);
     setAgentFinalStatus(null);
-    setPerceptionSteps([]);
     activeRunFramesRef.current = [];
     setReplayFrames([]);
     setAgentRunning(true);
+    setAgentStopping(false);
+    stickToBottomRef.current = true;
+    const prompt = activePrompt(agentConfig);
+    setAgentRunInfo({
+      startedAt: new Date().toISOString(),
+      promptName: prompt.name,
+      systemPrompt: prompt.systemPrompt,
+      feedbackPrompt: prompt.feedbackPrompt,
+      visionEnabled: agentConfig.visionEnabled,
+      terminationMode: agentConfig.terminationMode,
+      maxTurns: agentConfig.maxTurns,
+      temperature: agentConfig.settings.temperature,
+    });
 
     const controller = new AbortController();
     agentAbortRef.current = controller;
 
     const onEvent = (event: AgentSSEEvent) => {
       if (event.type === "turn_start") {
-        setAgentLiveTurn({ turn: event.turn, text: "" });
+        const next = { turn: event.turn, inputText: event.input_text, inputFrames: event.input_frames, text: "", phase: "generating" as const };
+        agentLiveTurnRef.current = next;
+        setAgentLiveTurn(next);
       } else if (event.type === "llm_delta") {
-        setAgentLiveTurn((prev) =>
-          prev && prev.turn === event.turn ? { ...prev, text: prev.text + event.text } : prev,
-        );
+        setAgentLiveTurn((prev) => {
+          if (!prev || prev.turn !== event.turn) return prev;
+          const next = { ...prev, text: prev.text + event.text };
+          agentLiveTurnRef.current = next;
+          return next;
+        });
+      } else if (event.type === "exec_start") {
+        setAgentLiveTurn((prev) => {
+          if (!prev || prev.turn !== event.turn) return prev;
+          const next = { ...prev, phase: "executing" as const };
+          agentLiveTurnRef.current = next;
+          return next;
+        });
       } else if (event.type === "turn_done") {
+        const inputSnapshot = agentLiveTurnRef.current;
+        agentLiveTurnRef.current = null;
         setAgentLiveTurn(null);
         setAgentTurns((prev) => [
           ...prev,
           {
             turn: event.turn,
+            inputText: inputSnapshot?.turn === event.turn ? inputSnapshot.inputText : "",
+            inputFrames: inputSnapshot?.turn === event.turn ? inputSnapshot.inputFrames : null,
             llmRaw: event.llm_raw,
             code: event.code,
             stdout: event.stdout,
             stderr: event.stderr,
             taskCompleted: event.task_completed,
+            perceptionSteps: event.perception_steps,
           },
         ]);
-        // Agent-triggered runs execute inside the sandbox the same way a
-        // manual/prompt-mode cell does, so the same "did this run produce
-        // any perception debug images" surfacing applies — but turn_done
-        // doesn't carry perception_steps (agent_loop.py's run_cell() result
-        // has them; the event just doesn't forward them, since Agent Mode's
-        // trajectory view has its own per-turn stdout/stderr display and
-        // wiring a second, differently-shaped panel wasn't worth it for
-        // Phase 2). The live camera frame still updates via the existing
-        // /stream websocket below, unaffected by any of this.
+        // Perception debug images (SAM3/GraspNet/PyRoKi) surface right
+        // below this turn's result in AgentTrajectoryView, not in a
+        // separate global panel — see App.tsx's agent-mode render branch,
+        // which skips <PerceptionPanel> entirely. The live camera frame
+        // still updates via the existing /stream websocket below,
+        // unaffected by any of this.
       } else if (event.type === "loop_done") {
+        // A turn that was still streaming when the loop ended (LLM error,
+        // stop) never got a turn_done — keep what was generated so far.
+        const partial = agentLiveTurnRef.current;
+        if (partial && partial.text) {
+          setAgentTurns((prev) => [
+            ...prev,
+            {
+              turn: partial.turn,
+              inputText: partial.inputText,
+              inputFrames: partial.inputFrames,
+              llmRaw: partial.text,
+              code: null,
+              stdout: "",
+              stderr: "",
+              taskCompleted: null,
+              perceptionSteps: [],
+            },
+          ]);
+        }
+        agentLiveTurnRef.current = null;
         setAgentLiveTurn(null);
         setAgentFinalStatus({ status: event.status, detail: event.detail });
         setAgentRunning(false);
+        setAgentStopping(false);
       }
     };
 
@@ -716,6 +835,7 @@ export default function App() {
       setAgentFinalStatus({ status: "error", detail: String(err) });
     } finally {
       setAgentRunning(false);
+      setAgentStopping(false);
       if (agentAbortRef.current === controller) agentAbortRef.current = null;
     }
   }, [agentConfig, agentRunning, session]);
@@ -727,8 +847,49 @@ export default function App() {
     // stream itself, which keeps running until the backend's own
     // `loop_done` event closes it, so the trajectory view still receives
     // whatever turn was already in flight.
+    setAgentStopping(true);
     stopAgentLoop(session.sessionId).catch(() => {});
   }, [session]);
+
+  // Export = Trajectory (.txt) + replay video (.mp4), both named by the
+  // export time (MMDDHHMMSS).
+  const handleExport = useCallback(async () => {
+    if (!session) return;
+    setExporting(true);
+    const stamp = exportTimestamp();
+    try {
+      downloadText(
+        buildTrajectoryText({
+          taskId: session.taskId,
+          notebookName,
+          runInfo: agentRunInfo,
+          turns: agentTurns,
+          status: agentFinalStatus,
+        }),
+        `${stamp}.txt`,
+      );
+      try {
+        if (replayUrlRef.current) URL.revokeObjectURL(replayUrlRef.current);
+        const url = await fetchReplayUrl(session.sessionId);
+        replayUrlRef.current = url;
+        downloadBlobUrl(url, `${stamp}.mp4`);
+      } catch (err) {
+        alert(`リプレイ動画の取得に失敗しました(Trajectoryは保存済み): ${err}`);
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [session, notebookName, agentRunInfo, agentTurns, agentFinalStatus]);
+
+  const handleAddPromptVersion = useCallback(() => {
+    setAgentConfig((prev) => {
+      const cur = activePrompt(prev);
+      let n = prev.promptVersions.length + 1;
+      while (prev.promptVersions.some((v) => v.name === `v${n}`)) n += 1;
+      const v = newPromptVersion(`v${n}`, cur);
+      return { ...prev, promptVersions: [...prev.promptVersions, v], activePromptId: v.id };
+    });
+  }, []);
 
   const handleSaveReplay = useCallback(async () => {
     if (!session) return;
@@ -806,11 +967,11 @@ export default function App() {
           onChangeLang={setPromptLang}
         />
       )}
-      <div className="main-panes">
+      <div className={mode === "agent" ? "main-panes main-panes-agent" : "main-panes"}>
         <div className="pane pane-camera">
           <CameraView frames={frames} replayFrames={replayFrames} activeCamera={activeCamera} onSelectCamera={setActiveCamera} />
         </div>
-        <div className="pane pane-editor">
+        <div className="pane pane-editor" ref={editorPaneRef} onScroll={handleEditorScroll}>
           {mode === "manual" ? (
             <>
               <div className="editor-header">
@@ -888,34 +1049,58 @@ export default function App() {
                 <span className="editor-title">Agent Mode</span>
                 <span className="editor-title">
                   {agentRunning
-                    ? `実行中(ターン ${agentLiveTurn?.turn ?? agentTurns.length} / ${agentConfig.maxTurns})`
+                    ? `${agentLiveTurn?.phase === "executing" ? "コード実行中" : "生成中"}(ターン ${agentLiveTurn?.turn ?? agentTurns.length} / ${agentConfig.maxTurns})`
                     : `完了ターン数: ${agentTurns.length}`}
                 </span>
               </div>
-              <AgentRunControls
-                running={agentRunning}
-                currentTurn={agentLiveTurn?.turn ?? agentTurns.length}
-                maxTurns={agentConfig.maxTurns}
-                onStart={handleAgentStart}
-                onStop={handleAgentStop}
-                disabled={resetting}
-              />
-              <AgentConfigPanel
-                config={agentConfig}
-                onChange={setAgentConfig}
-                disabled={agentRunning}
-                taskInstruction={session.taskPrompt ?? ""}
-                apiDocument={session.apiDocs}
-                lastStdout={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stdout : null}
-                lastStderr={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stderr : null}
-              />
+              <div className="agent-toolbar-row">
+                <PromptVersionSelect
+                  versions={agentConfig.promptVersions}
+                  activeId={agentConfig.activePromptId}
+                  onSelect={(id) => setAgentConfig((prev) => ({ ...prev, activePromptId: id }))}
+                  onAdd={handleAddPromptVersion}
+                  disabled={agentRunning}
+                />
+                <AgentRunControls
+                  running={agentRunning}
+                  stopping={agentStopping}
+                  currentTurn={agentLiveTurn?.turn ?? agentTurns.length}
+                  maxTurns={agentConfig.maxTurns}
+                  onStart={handleAgentStart}
+                  onStop={handleAgentStop}
+                  disabled={resetting}
+                  onExport={handleExport}
+                  canExport={agentTurns.length > 0}
+                  exporting={exporting}
+                />
+              </div>
+              <details className="agent-settings-toggle">
+                <summary>セッション設定(画像入力・終了条件・max turns)</summary>
+                <AgentSessionSettings config={agentConfig} onChange={setAgentConfig} disabled={agentRunning} />
+              </details>
+              <div className="agent-prompt-section">
+                <AgentPromptEditor
+                  config={agentConfig}
+                  onChange={setAgentConfig}
+                  disabled={agentRunning}
+                  taskInstruction={session.taskPrompt ?? ""}
+                  apiDocument={session.apiDocs}
+                  lastStdout={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stdout : null}
+                  lastStderr={agentTurns.length > 0 ? agentTurns[agentTurns.length - 1].stderr : null}
+                />
+              </div>
               <AgentTrajectoryView turns={agentTurns} liveTurn={agentLiveTurn} finalStatus={agentFinalStatus} />
             </>
           )}
         </div>
-        <div className="pane pane-perception">
-          <PerceptionPanel steps={perceptionSteps} />
-        </div>
+        {mode !== "agent" && (
+          // Agent Mode has no separate Perception pane — each turn's
+          // Perception steps render inline under that turn's result in
+          // AgentTrajectoryView instead (see the "agent" branch above).
+          <div className="pane pane-perception">
+            <PerceptionPanel steps={perceptionSteps} />
+          </div>
+        )}
       </div>
     </div>
   );

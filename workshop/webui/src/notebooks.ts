@@ -4,6 +4,8 @@
 // artifact/browser-storage conventions) — never shared between browsers or
 // sessions, and can come back empty (private browsing, cleared site data).
 
+import type { PerceptionStep } from "./types";
+
 // "manual" is the original hand-written Perception/Control Primitive
 // notebook (unchanged). "prompt" is the LLM prompt-engineering notebook:
 // one prompt + one generated code block per "experiment", with an optional
@@ -36,9 +38,18 @@ export interface PromptExperiment {
 // Not tied to a particular taskId: the whole point of Agent Mode is writing
 // a prompt that generalizes across tasks, so this shape is reused as-is if
 // Phase 3 later runs the same config against several tasks at once.
-export interface AgentConfig {
+export interface PromptVersion {
+  id: string;
+  name: string;
   systemPrompt: string;
   feedbackPrompt: string;
+}
+
+export interface AgentConfig {
+  // Prompt versions the participant can switch between (top-left dropdown);
+  // only the active one is sent when a run starts.
+  promptVersions: PromptVersion[];
+  activePromptId: string;
   visionEnabled: boolean;
   terminationMode: "simulation" | "agent";
   maxTurns: number;
@@ -46,24 +57,45 @@ export interface AgentConfig {
 }
 
 // One completed turn of an Agent Mode run — mirrors agent_loop.py's
-// `turn_done` event shape (backend/agent_loop.py), minus `frames` (images
-// are never persisted, same policy as PromptTurn.lastRun above).
+// `turn_start`/`turn_done` event shapes combined into one record per turn.
+// `inputFrames`/`perceptionSteps[].images` carry base64 images and are
+// stripped before persisting (same "images are never persisted" policy as
+// PromptTurn.lastRun above) — see App.tsx's saveNotebook effect, which
+// builds the persisted copy; the in-memory copy used for live rendering
+// keeps them.
 export interface AgentTurnEvent {
   turn: number;
+  inputText: string; // the rendered prompt actually sent to the LLM this turn
+  inputFrames: Record<string, string> | null; // image(s) attached to that input, if vision was on
   llmRaw: string;
-  code: string;
+  code: string | null; // null: the model emitted no code block (nothing was executed)
   stdout: string;
   stderr: string;
   taskCompleted: boolean | null;
+  perceptionSteps: PerceptionStep[];
 }
 
 // Mirrors agent_loop.py's `LoopStatus`.
 export type AgentLoopStatus = "task_completed" | "agent_finished" | "max_turns" | "stopped" | "error";
 
+// What a run was started with — kept next to its result so Export can
+// describe the run even if the participant edits the prompts afterwards.
+export interface AgentRunInfo {
+  startedAt: string; // ISO timestamp
+  promptName: string;
+  systemPrompt: string;
+  feedbackPrompt: string;
+  visionEnabled: boolean;
+  terminationMode: AgentConfig["terminationMode"];
+  maxTurns: number;
+  temperature: number;
+}
+
 export interface AgentRunResult {
   status: AgentLoopStatus;
   detail: string | null;
   turns: AgentTurnEvent[];
+  runInfo?: AgentRunInfo;
 }
 
 export interface Notebook {
@@ -107,14 +139,56 @@ stderr:
 
 タスクが完了しているか、Perception APIなどを使って自分で確認してください。完了していればコードを書かずにその旨を答え、まだなら続きのコードを書いてください。`;
 
-export function defaultAgentConfig(): AgentConfig {
+let promptVersionCounter = 0;
+export function newPromptVersion(name: string, base?: Pick<PromptVersion, "systemPrompt" | "feedbackPrompt">): PromptVersion {
+  promptVersionCounter += 1;
   return {
-    systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
-    feedbackPrompt: DEFAULT_AGENT_FEEDBACK_PROMPT,
-    visionEnabled: false,
+    id: `pv-${Date.now().toString(36)}-${promptVersionCounter}`,
+    name,
+    systemPrompt: base?.systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT,
+    feedbackPrompt: base?.feedbackPrompt ?? DEFAULT_AGENT_FEEDBACK_PROMPT,
+  };
+}
+
+export function defaultAgentConfig(): AgentConfig {
+  const v1 = newPromptVersion("v1");
+  return {
+    promptVersions: [v1],
+    activePromptId: v1.id,
+    visionEnabled: true,
     terminationMode: "agent",
-    maxTurns: 10,
+    maxTurns: 15,
     settings: { temperature: 0.7 },
+  };
+}
+
+export function activePrompt(config: AgentConfig): PromptVersion {
+  return config.promptVersions.find((v) => v.id === config.activePromptId) ?? config.promptVersions[0];
+}
+
+// Notebooks saved before prompt versioning carry systemPrompt/feedbackPrompt
+// directly on the config — fold them into a single "v1" version.
+export function normalizeAgentConfig(raw: unknown): AgentConfig {
+  const base = defaultAgentConfig();
+  if (!raw || typeof raw !== "object") return base;
+  const c = raw as Partial<AgentConfig> & { systemPrompt?: string; feedbackPrompt?: string };
+  let versions = Array.isArray(c.promptVersions) ? c.promptVersions.filter((v) => v && v.id) : [];
+  if (versions.length === 0) {
+    versions = [
+      {
+        ...base.promptVersions[0],
+        systemPrompt: c.systemPrompt ?? base.promptVersions[0].systemPrompt,
+        feedbackPrompt: c.feedbackPrompt ?? base.promptVersions[0].feedbackPrompt,
+      },
+    ];
+  }
+  return {
+    promptVersions: versions,
+    activePromptId: versions.some((v) => v.id === c.activePromptId) ? (c.activePromptId as string) : versions[0].id,
+    visionEnabled: c.visionEnabled ?? base.visionEnabled,
+    terminationMode: c.terminationMode ?? base.terminationMode,
+    maxTurns: c.maxTurns ?? base.maxTurns,
+    settings: { ...base.settings, ...(c.settings ?? {}) },
   };
 }
 

@@ -241,6 +241,15 @@ async function agentRun(req, res, session, body) {
   const maxTurns = body.max_turns ?? 10;
   const turnCount = Math.min(AGENT_TURN_RESPONSES.length, maxTurns);
 
+  // Mirrors agent_loop.py's input_text/input_frames tracking: what the
+  // *next* turn's turn_start reports as having been sent is whatever this
+  // turn's prompt text + result frames were. The mock doesn't actually
+  // render Jinja (no prompt_render.py equivalent here) — it just uses the
+  // raw system_prompt/feedback_prompt text verbatim, which is enough to
+  // exercise the chat view's layout without a real template engine.
+  let inputText = body.system_prompt ?? "";
+  let inputFrames = body.vision_enabled ? framesFor(session) : null;
+
   for (let i = 0; i < turnCount; i++) {
     const turn = i + 1;
     if (session.agentStopRequested) {
@@ -248,7 +257,7 @@ async function agentRun(req, res, session, body) {
       return res.end();
     }
 
-    write({ type: "turn_start", turn });
+    write({ type: "turn_start", turn, input_text: inputText, input_frames: inputFrames });
     const text = AGENT_TURN_RESPONSES[i];
     for (let c = 0; c < text.length; c += SSE_CHUNK_CHARS) {
       write({ type: "llm_delta", turn, text: text.slice(c, c + SSE_CHUNK_CHARS) });
@@ -257,10 +266,12 @@ async function agentRun(req, res, session, body) {
 
     const code = extractLastCodeBlock(text);
     if (code === null) {
+      write({ type: "turn_done", turn, llm_raw: text, code: null, stdout: "", stderr: "", frames: null, task_completed: null, perception_steps: [] });
       write({ type: "loop_done", status: "agent_finished", turn, detail: null });
       return res.end();
     }
 
+    write({ type: "exec_start", turn });
     await withSessionLock(session, () => simulateRun(session));
     const result = runCellResult(session, `agent-turn-${turn}`, code);
     // Canned "success" after turn 2, purely so termination_mode="simulation"
@@ -275,7 +286,11 @@ async function agentRun(req, res, session, body) {
       stderr: result.stderr,
       frames: body.vision_enabled ? result.frames : null,
       task_completed: taskCompleted,
+      perception_steps: result.perception_steps,
     });
+
+    inputText = (body.feedback_prompt ?? "") + `\n\n(stdout: ${result.stdout.trim()})`;
+    inputFrames = body.vision_enabled ? result.frames : null;
 
     if (body.termination_mode === "simulation" && taskCompleted) {
       write({ type: "loop_done", status: "task_completed", turn, detail: null });

@@ -1,5 +1,5 @@
-import type { CellResult, CreateSessionResponse, ResetResponse, TaskSummary } from "./types";
-import type { AgentConfig, AgentLoopStatus, GenerationSettings } from "./notebooks";
+import type { CellResult, CreateSessionResponse, PerceptionStep, ResetResponse, TaskSummary } from "./types";
+import { activePrompt, type AgentConfig, type AgentLoopStatus, type GenerationSettings } from "./notebooks";
 
 // All calls use relative paths on purpose: in dev, Vite proxies /api to the
 // backend (vite.config.ts); in production the backend serves this app from
@@ -182,18 +182,20 @@ export function streamUrl(sessionId: string): string {
 // ---------------------------------------------------------------------
 
 export type AgentSSEEvent =
-  | { type: "turn_start"; turn: number }
+  | { type: "turn_start"; turn: number; input_text: string; input_frames: Record<string, string> | null }
   | { type: "llm_delta"; turn: number; text: string }
   | {
       type: "turn_done";
       turn: number;
       llm_raw: string;
-      code: string;
+      code: string | null;
       stdout: string;
       stderr: string;
       frames: Record<string, string> | null;
       task_completed: boolean | null;
+      perception_steps: PerceptionStep[];
     }
+  | { type: "exec_start"; turn: number }
   | { type: "loop_done"; status: AgentLoopStatus; turn: number; detail: string | null };
 
 // Streams one full Agent Loop run. Resolves once the backend's `loop_done`
@@ -211,12 +213,13 @@ export async function runAgentLoop(
   onEvent: (event: AgentSSEEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const prompt = activePrompt(config);
   const res = await fetch(`/api/sessions/${sessionId}/agent/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      system_prompt: config.systemPrompt,
-      feedback_prompt: config.feedbackPrompt,
+      system_prompt: prompt.systemPrompt,
+      feedback_prompt: prompt.feedbackPrompt,
       vision_enabled: config.visionEnabled,
       termination_mode: config.terminationMode,
       max_turns: config.maxTurns,
