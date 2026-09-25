@@ -222,6 +222,18 @@ TASKS: list[TaskSpec] = [
         # class constant like the Robosuite tasks above — see TaskSpec's
         # docstring.
     ),
+    TaskSpec(
+        task_id="libero_object_0",
+        name="LIBERO: Alphabet Soup into Basket (Object)",
+        description=(
+            "LIBEROベンチマークのobjectスイート、タスク0です。"
+            "テーブル上のアルファベットスープ缶をつかんでバスケットに入れます。"
+            "対象物は1つの名前で特定でき、位置関係の絞り込みが要らないため、"
+            "LIBEROの中では易しめです。物体認識→把持→移動の基本の流れを練習できます。"
+        ),
+        config_path="env_configs/libero/franka_libero_object_0.yaml",
+        runtime="libero",
+    ),
 ]
 
 
