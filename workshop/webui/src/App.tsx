@@ -91,6 +91,9 @@ function withFreshId(exp: PromptExperiment): PromptExperiment {
 interface SessionInfo {
   sessionId: string;
   taskId: string;
+  // Agent-mode notebooks are started from a suite (its tasks are what the
+  // generalization test runs); null for the other modes.
+  suiteId: string | null;
   taskPrompt: string | null;
   taskPromptJa: string | null;
   apiDocs: string;
@@ -216,7 +219,7 @@ export default function App() {
   // Generalization test: the same Agent config run over several tasks (see
   // eval_runner.py). Each task's run is kept as its own AgentRunView; the
   // chat below shows the running task live, or whichever chip was clicked.
-  const [evalSuite, setEvalSuite] = useState<EvalSuite | null>(null);
+  const [evalSuites, setEvalSuites] = useState<EvalSuite[]>([]);
   const [evalSelected, setEvalSelected] = useState<Set<string>>(new Set());
   const [evalActive, setEvalActive] = useState(false);
   const [evalJobs, setEvalJobs] = useState<EvalJobState[]>([]);
@@ -239,16 +242,26 @@ export default function App() {
   const shownLive = evalActive ? (shownJob?.view.live ?? null) : agentLiveTurn;
   const shownFinal = evalActive ? (shownJob?.view.final ?? null) : agentFinalStatus;
 
+  // The suite this notebook was started from (or, for older notebooks, the
+  // one containing its task).
+  const evalSuite =
+    evalSuites.find((x) => x.suite_id === session?.suiteId) ??
+    evalSuites.find((x) => x.tasks.some((t) => t.task_id === session?.taskId)) ??
+    evalSuites[0] ??
+    null;
+  const evalSuiteId = evalSuite?.suite_id;
+
   useEffect(() => {
-    if (mode !== "agent" || evalSuite) return;
+    if (mode !== "agent" || evalSuites.length > 0) return;
     listEvalSuites()
-      .then((res) => {
-        const suite = res.suites[0] ?? null;
-        setEvalSuite(suite);
-        if (suite) setEvalSelected(new Set(suite.default_task_ids));
-      })
+      .then((res) => setEvalSuites(res.suites))
       .catch(() => {});
-  }, [mode, evalSuite]);
+  }, [mode, evalSuites.length]);
+
+  useEffect(() => {
+    if (evalSuite) setEvalSelected(new Set(evalSuite.default_task_ids));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evalSuiteId]);
 
   // Follow the output while a run streams in, unless the participant has
   // scrolled up (re-enabled once they scroll back to the bottom or start a
@@ -329,7 +342,7 @@ export default function App() {
     setStreamSessionId(null);
   }, []);
 
-  const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode) => {
+  const handleStartNew = useCallback(async (taskId: string, name: string, notebookMode: NotebookMode, suiteId?: string) => {
     setStarting(true);
     setStartError(null);
     try {
@@ -337,6 +350,7 @@ export default function App() {
       setSession({
         sessionId: res.session_id,
         taskId: res.task_id,
+        suiteId: suiteId ?? null,
         taskPrompt: res.task_prompt,
         taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
@@ -372,7 +386,7 @@ export default function App() {
         setExperiments([]);
         setExpUi({});
         setAgentConfig(config);
-        saveNotebook({ id, name, taskId, mode: "agent", cells: [], agentConfig: config, updatedAt: new Date().toISOString() });
+        saveNotebook({ id, name, taskId, suiteId, mode: "agent", cells: [], agentConfig: config, updatedAt: new Date().toISOString() });
       } else {
         setCells([newCell()]);
         setExperiments([]);
@@ -394,6 +408,7 @@ export default function App() {
       setSession({
         sessionId: res.session_id,
         taskId: res.task_id,
+        suiteId: notebook.suiteId ?? null,
         taskPrompt: res.task_prompt,
         taskPromptJa: res.task_prompt_ja,
         apiDocs: res.api_docs,
@@ -461,6 +476,7 @@ export default function App() {
         id: notebookId,
         name: notebookName,
         taskId: session.taskId,
+        suiteId: session.suiteId ?? undefined,
         mode,
         cells: mode === "manual" ? cells.map((c) => c.code) : [],
         experiments: mode === "prompt" ? experiments : undefined,
@@ -985,6 +1001,41 @@ export default function App() {
     stopEval(evalIdRef.current).catch(() => {});
   }, []);
 
+  // Switch the notebook to another task of its suite: a fresh sandbox on the
+  // new task, the old one closed. Prompts/settings are kept; the previous
+  // task's trajectory is cleared.
+  const [switchingTask, setSwitchingTask] = useState(false);
+  const handleSwitchTask = useCallback(
+    async (taskId: string) => {
+      if (!session || taskId === session.taskId || agentRunning || evalRunning || switchingTask) return;
+      setSwitchingTask(true);
+      try {
+        const res = await createSession(taskId);
+        const oldSessionId = session.sessionId;
+        resetAgentState();
+        setSession({
+          sessionId: res.session_id,
+          taskId: res.task_id,
+          suiteId: session.suiteId,
+          taskPrompt: res.task_prompt,
+          taskPromptJa: res.task_prompt_ja,
+          apiDocs: res.api_docs,
+        });
+        setFrames(res.frames);
+        setPerceptionSteps([]);
+        activeRunFramesRef.current = [];
+        setReplayFrames([]);
+        setActiveCamera("robot0_robotview");
+        closeSession(oldSessionId).catch(() => {});
+      } catch (err) {
+        alert(`タスクの切り替えに失敗しました: ${err}`);
+      } finally {
+        setSwitchingTask(false);
+      }
+    },
+    [session, agentRunning, evalRunning, switchingTask, resetAgentState],
+  );
+
   const handleEvalSelectJob = useCallback(
     (jobId: string) => setEvalViewId(jobId === evalFollowId && evalRunning ? null : jobId),
     [evalFollowId, evalRunning],
@@ -1195,6 +1246,23 @@ export default function App() {
                 </span>
               </div>
               <div className="agent-toolbar-row">
+                {evalSuite && evalSuite.tasks.length > 1 && (
+                  <label className="task-switch">
+                    <span className="prompt-version-caption">タスク</span>
+                    <select
+                      value={session.taskId}
+                      disabled={agentRunning || evalRunning || switchingTask}
+                      onChange={(e) => handleSwitchTask(e.target.value)}
+                    >
+                      {evalSuite.tasks.map((t) => (
+                        <option key={t.task_id} value={t.task_id}>
+                          {shortTaskName(t.name)}
+                        </option>
+                      ))}
+                    </select>
+                    {switchingTask && <span className="muted">切り替え中...</span>}
+                  </label>
+                )}
                 <PromptVersionSelect
                   versions={agentConfig.promptVersions}
                   activeId={agentConfig.activePromptId}

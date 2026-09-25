@@ -264,11 +264,25 @@ TASKS: list[TaskSpec] = [
 # tasks run with one prompt, scored as successes / total.
 SUITES: list[dict] = [
     {
+        "suite_id": "robosuite",
+        "name": "Robosuite",
+        "description": "Cube Stack / Cube Restack / Spill Wipe / Two-Arm Handover の4タスク。積む・入れ替える・拭く・受け渡すと、動作の種類が異なるタスクで汎化を試します。",
+        "task_ids": ["cube_stack", "cube_restack", "spill_wipe", "two_arm_handover"],
+        "default_task_ids": ["cube_stack", "cube_restack", "spill_wipe", "two_arm_handover"],
+    },
+    {
         "suite_id": "libero_object",
         "name": "LIBERO-Object",
-        "description": "テーブル上の物体を1つずつバスケットに入れるスイート。",
+        "description": "テーブル上の物体(缶・箱・ボトルなど)を1つずつバスケットに入れる10タスク。最初は3タスクを選択しています。",
         "task_ids": [f"libero_object_{i}" for i in range(len(LIBERO_OBJECT_TASKS))],
         "default_task_ids": [f"libero_object_{i}" for i in LIBERO_OBJECT_DEFAULT],
+    },
+    {
+        "suite_id": "libero_spatial",
+        "name": "LIBERO-Spatial",
+        "description": "同じ種類のボウルが複数あり、位置関係(皿とラメキンの間など)から対象を絞り込むタスク。",
+        "task_ids": ["libero_spatial_0"],
+        "default_task_ids": ["libero_spatial_0"],
     },
 ]
 

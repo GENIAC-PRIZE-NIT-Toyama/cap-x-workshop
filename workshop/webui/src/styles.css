@@ -1591,3 +1591,6 @@ pre {
 .eval-pick { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.8rem; cursor: pointer; background: var(--surface-alt); }
 .eval-pick.on { border-color: var(--primary); color: var(--primary); }
 .eval-pick input { margin: 0; }
+
+.task-switch { display: inline-flex; align-items: center; gap: 8px; }
+.task-switch select { padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--text); }

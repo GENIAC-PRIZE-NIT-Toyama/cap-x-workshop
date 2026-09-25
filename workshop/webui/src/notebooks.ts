@@ -102,6 +102,7 @@ export interface Notebook {
   id: string;
   name: string;
   taskId: string;
+  suiteId?: string; // Agent mode: the suite the notebook was started from
   mode: NotebookMode;
   cells: string[]; // code only — execution results aren't persisted. Used when mode === "manual"
   experiments?: PromptExperiment[]; // used when mode === "prompt"

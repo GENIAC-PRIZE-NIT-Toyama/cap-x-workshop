@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { listTasks } from "../api";
+import { listEvalSuites, listTasks, type EvalSuite } from "../api";
 import { listNotebooks, deleteNotebook, type Notebook, type NotebookMode } from "../notebooks";
 import type { TaskSummary } from "../types";
 
 interface Props {
-  onStartNew: (taskId: string, name: string, mode: NotebookMode) => void;
+  onStartNew: (taskId: string, name: string, mode: NotebookMode, suiteId?: string) => void;
   onOpenNotebook: (notebook: Notebook) => void;
   busy: boolean;
 }
@@ -14,14 +14,12 @@ function TaskGrid({
   busy,
   name,
   mode,
-  featured,
   onStartNew,
 }: {
   tasks: TaskSummary[];
   busy: boolean;
   name: string;
   mode: NotebookMode;
-  featured?: boolean;
   onStartNew: (taskId: string, name: string, mode: NotebookMode) => void;
 }) {
   return (
@@ -29,7 +27,7 @@ function TaskGrid({
       {tasks.map((task) => (
         <button
           key={task.task_id}
-          className={featured ? "task-card featured" : "task-card"}
+          className="task-card"
           disabled={busy}
           onClick={() => onStartNew(task.task_id, name.trim() || task.name, mode)}
         >
@@ -40,6 +38,8 @@ function TaskGrid({
     </div>
   );
 }
+
+const shortName = (n: string) => n.replace(/^LIBERO: /, "").replace(/ into Basket.*$/, "");
 
 function notebookMeta(nb: Notebook, taskName: string): string {
   const count =
@@ -55,6 +55,7 @@ function notebookMeta(nb: Notebook, taskName: string): string {
 export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [suites, setSuites] = useState<EvalSuite[]>([]);
   const [name, setName] = useState("");
   const [notebooks, setNotebooks] = useState<Notebook[]>(() => listNotebooks());
   const [mode, setMode] = useState<NotebookMode>(() => {
@@ -66,6 +67,12 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
   useEffect(() => {
     localStorage.setItem("defaultNotebookMode", mode);
   }, [mode]);
+
+  useEffect(() => {
+    listEvalSuites()
+      .then((res) => setSuites(res.suites))
+      .catch((err) => setError(String(err)));
+  }, []);
 
   useEffect(() => {
     listTasks()
@@ -80,8 +87,6 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
     setNotebooks(listNotebooks());
   };
 
-  const featuredTasks = tasks?.filter((t) => t.featured) ?? [];
-  const otherTasks = tasks?.filter((t) => !t.featured) ?? [];
 
   return (
     <div className="task-select">
@@ -166,18 +171,36 @@ export default function TaskSelect({ onStartNew, onOpenNotebook, busy }: Props) 
       {error && <p className="error">タスク一覧の取得に失敗しました: {error}</p>}
       {!tasks && !error && <p>読み込み中...</p>}
 
-      {featuredTasks.length > 0 && (
+      {mode === "agent" ? (
         <>
-          <h2 className="task-section-title">おすすめタスク</h2>
-          <TaskGrid tasks={featuredTasks} busy={busy} name={name} mode={mode} featured onStartNew={onStartNew} />
+          <h2 className="task-section-title">スイートを選択</h2>
+          <p className="muted">
+            Agentモードでは、1つのプロンプトを複数タスクに試す「汎化テスト」ができます。まずスイートを選んでください。
+          </p>
+          {suites.length === 0 && !error && <p>読み込み中...</p>}
+          <div className="task-grid">
+            {suites.map((suite) => (
+              <button
+                key={suite.suite_id}
+                className="task-card"
+                disabled={busy}
+                onClick={() => onStartNew(suite.default_task_ids[0], name.trim() || suite.name, "agent", suite.suite_id)}
+              >
+                <h2>{suite.name}</h2>
+                <p>{suite.description}</p>
+                <p className="muted">{suite.tasks.map((t) => shortName(t.name)).join(" / ")}</p>
+              </button>
+            ))}
+          </div>
         </>
-      )}
-
-      {otherTasks.length > 0 && (
-        <>
-          <h2 className="task-section-title">その他のタスク</h2>
-          <TaskGrid tasks={otherTasks} busy={busy} name={name} mode={mode} onStartNew={onStartNew} />
-        </>
+      ) : (
+        tasks &&
+        tasks.length > 0 && (
+          <>
+            <h2 className="task-section-title">タスクを選択</h2>
+            <TaskGrid tasks={tasks} busy={busy} name={name} mode={mode} onStartNew={onStartNew} />
+          </>
+        )
       )}
     </div>
   );
